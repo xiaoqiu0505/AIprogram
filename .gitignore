@@ -1,0 +1,83 @@
+# ==================== 敏感信息（最重要）====================
+# API Key 配置文件在 %APPDATA%，理论上不在项目内，
+# 但万一手滑复制进来了，这里兜底拦截
+config.json
+*.config.json
+.env
+.env.*
+*secret*
+*secrets*
+*.key
+*.pem
+api_key.txt
+
+# ==================== Python ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ==================== PyInstaller ====================
+*.spec
+*.manifest
+*.log
+
+# ==================== 虚拟环境 ====================
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ==================== IDE / 编辑器 ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ==================== 测试 / 缓存 ====================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.cache
+.mypy_cache/
+.ruff_cache/
+
+# ==================== 临时文件 ====================
+*.tmp
+*.temp
+~$*
+_*test*.py
+_dbg*.py
+
+# ==================== 编译产物 ====================
+# build/ 是 PyInstaller 中间文件，不要上传（上面已排除）
+# dist/ 里的 exe 要发布，所以这里放开
+!dist/
+!dist/*.exe
+
+# 本地打包的 zip
+*.zip
