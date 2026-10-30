@@ -214,12 +214,32 @@ class App(tk.Tk):
 
     # ---------------- 主题切换 ----------------
     def toggle_theme(self):
-        """浅色 <-> 深色"""
+        """浅色 <-> 深色（建模进行中禁止切换）"""
+        # ★ 关键保护：建模/导出进行中不能重建界面，
+        #   否则后台线程会往已销毁的控件写数据，导致界面错乱
+        if getattr(self, "_busy", False):
+            self._show_busy_hint()
+            return
+
         new = "dark" if self.current_theme == "light" else "light"
         self.set_theme(new)
 
+    def _show_busy_hint(self):
+        """提示当前正忙，不能切换主题"""
+        try:
+            messagebox.showinfo(
+                "正在处理中",
+                "AI 正在思考或建模，这会儿不能切换深浅色。\n\n"
+                "请等这一步完成后再切换（只需几秒到一分钟）。")
+        except Exception:
+            pass
+
     def set_theme(self, name):
         """应用主题并重建界面"""
+        if getattr(self, "_busy", False):
+            self._show_busy_hint()
+            return
+
         self.current_theme = name
 
         # 保存到配置
@@ -238,6 +258,11 @@ class App(tk.Tk):
 
     def _rebuild_ui(self):
         """按当前主题重建整个界面"""
+        # ★ 双保险：忙的时候绝不重建
+        if getattr(self, "_busy", False):
+            self._show_busy_hint()
+            return
+
         # 记住当前页面
         cur_page = "home"
         for nm, p in getattr(self, "pages", {}).items():
@@ -245,26 +270,60 @@ class App(tk.Tk):
                 cur_page = nm
                 break
 
-        # 销毁旧控件
-        for w in self.winfo_children():
-            try:
-                w.destroy()
-            except Exception:
-                pass
-        self.pages = {}
-
-        # 重建
-        self.configure(bg=C_BG)
-        self._setup_style()
-        self._build_topbar()
-        self.container = tk.Frame(self, bg=C_BG)
-        self.container.pack(fill="both", expand=True)
-        self._create_pages()
-
+        # 记住设计页的输入内容（防止重建后丢失）
+        saved_inputs = None
         try:
-            self.show_page(cur_page)
+            dp = self.pages.get("design")
+            if dp is not None:
+                saved_inputs = {
+                    "image_paths": list(getattr(dp, "image_paths", []) or []),
+                    "image_path": getattr(dp, "image_path", None),
+                    "image_is_sketch": getattr(dp, "image_is_sketch", False),
+                    "image_is_three_view": getattr(dp, "image_is_three_view", False),
+                    "desc": dp.get_desc(),
+                }
         except Exception:
-            self.show_page("home")
+            saved_inputs = None
+
+        self._rebuilding = True
+        try:
+            # 销毁旧控件
+            for w in self.winfo_children():
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
+            self.pages = {}
+
+            # 重建
+            self.configure(bg=C_BG)
+            self._setup_style()
+            self._build_topbar()
+            self.container = tk.Frame(self, bg=C_BG)
+            self.container.pack(fill="both", expand=True)
+            self._create_pages()
+
+            # 恢复设计页的输入内容
+            if saved_inputs:
+                try:
+                    dp = self.pages.get("design")
+                    if dp is not None:
+                        dp.image_paths = saved_inputs["image_paths"]
+                        dp.image_path = saved_inputs["image_path"]
+                        dp.image_is_sketch = saved_inputs["image_is_sketch"]
+                        dp.image_is_three_view = saved_inputs["image_is_three_view"]
+                        dp._refresh_images()
+                        if saved_inputs["desc"]:
+                            dp.set_desc(saved_inputs["desc"])
+                except Exception:
+                    pass
+
+            try:
+                self.show_page(cur_page)
+            except Exception:
+                self.show_page("home")
+        finally:
+            self._rebuilding = False
 
     def open_key_dialog(self):
         """打开 API Key 管理窗口"""
@@ -2000,7 +2059,32 @@ class DesignPage(tk.Frame):
                     pass
 
     def _ui(self, fn):
-        self.after(0, fn)
+        """
+        从后台线程安全地更新界面。
+
+        ★ 保护：如果本页面已被销毁（比如切换主题重建了界面），
+          就丢弃这次更新，避免抛 TclError 或写坏已销毁的控件。
+        """
+        try:
+            # 页面已被销毁 → 直接丢弃
+            if not self.winfo_exists():
+                return
+            self.after(0, self._ui_safe(fn))
+        except Exception:
+            # 任何异常都不应该让后台线程崩掉
+            pass
+
+    def _ui_safe(self, fn):
+        """包一层，回调时再检查一次页面是否还在"""
+        def wrapper():
+            try:
+                if not self.winfo_exists():
+                    return
+                fn()
+            except Exception:
+                # 控件已销毁时静默忽略
+                pass
+        return wrapper
 
     def _done_ok(self, spec, result):
         self.app._busy = False
