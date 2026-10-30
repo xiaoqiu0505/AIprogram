@@ -301,3 +301,63 @@ def get_downloads_dir() -> str:
     if os.path.isdir(d2):
         return d2
     return os.path.expanduser("~")
+
+
+# ==================== 保存路径设置 ====================
+def get_model_dir() -> str:
+    """
+    取 SolidWorks 模型的保存目录。
+    未设置时用系统「下载」文件夹。
+    """
+    cfg_data = load_config()
+    p = (cfg_data.get("paths") or {}).get("model_dir", "")
+    if p and os.path.isdir(p):
+        return p
+    return get_downloads_dir()
+
+
+def get_print_dir() -> str:
+    """
+    取 3D 打印文件的保存目录。
+    未设置时跟随模型目录（都是系统下载文件夹）。
+    """
+    cfg_data = load_config()
+    p = (cfg_data.get("paths") or {}).get("print_dir", "")
+    if p and os.path.isdir(p):
+        return p
+    # 回退到模型目录
+    return get_model_dir()
+
+
+def set_model_dir(path: str) -> bool:
+    """设置模型目录，成功返回 True"""
+    if not path or not os.path.isdir(path):
+        return False
+    try:
+        cfg_data = load_config()
+        cfg_data.setdefault("paths", {})["model_dir"] = path
+        save_config(cfg_data)
+        return True
+    except Exception:
+        return False
+
+
+def set_print_dir(path: str) -> bool:
+    """设置打印目录，成功返回 True"""
+    if not path or not os.path.isdir(path):
+        return False
+    try:
+        cfg_data = load_config()
+        cfg_data.setdefault("paths", {})["print_dir"] = path
+        save_config(cfg_data)
+        return True
+    except Exception:
+        return False
+
+
+def reset_paths():
+    """恢复默认（都指向系统下载文件夹）"""
+    cfg_data = load_config()
+    cfg_data.setdefault("paths", {})["model_dir"] = ""
+    cfg_data.setdefault("paths", {})["print_dir"] = ""
+    save_config(cfg_data)

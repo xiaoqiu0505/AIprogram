@@ -29,19 +29,77 @@ else:
 import config as cfg
 import api_client
 
-# ==================== 配色（浅色系）====================
-C_BG        = "#F7F8FA"   # 主背景
-C_CARD      = "#FFFFFF"   # 卡片
-C_PRIMARY   = "#4A7CFF"   # 主色（蓝）
-C_PRIMARY_D = "#3A63D4"   # 主色深
-C_TEXT      = "#1F2430"   # 主文字
-C_SUB       = "#6B7280"   # 次要文字
-C_BORDER    = "#E3E6EC"   # 边框
-C_INPUT_BG  = "#FBFCFD"   # 输入框
-C_OK        = "#22A06B"   # 成功绿
-C_ERR       = "#E5484D"   # 错误红
-C_WARN      = "#E8A33D"   # 警告橙
-C_HOVER     = "#EEF3FF"   # 悬停
+# ==================== 配色 ====================
+# 浅色（默认）
+LIGHT = {
+    "C_BG":        "#F7F8FA",
+    "C_CARD":      "#FFFFFF",
+    "C_PRIMARY":   "#4A7CFF",
+    "C_PRIMARY_D": "#3A63D4",
+    "C_TEXT":      "#1F2430",
+    "C_SUB":       "#6B7280",
+    "C_BORDER":    "#E3E6EC",
+    "C_INPUT_BG":  "#FBFCFD",
+    "C_OK":        "#22A06B",
+    "C_ERR":       "#E5484D",
+    "C_WARN":      "#E8A33D",
+    "C_HOVER":     "#EEF3FF",
+    "C_PANEL":     "#F7F9FC",
+}
+
+# 深色
+DARK = {
+    "C_BG":        "#16181D",
+    "C_CARD":      "#22252C",
+    "C_PRIMARY":   "#5B8CFF",
+    "C_PRIMARY_D": "#4A7CFF",
+    "C_TEXT":      "#E8EAED",
+    "C_SUB":       "#9AA0AB",
+    "C_BORDER":    "#33373F",
+    "C_INPUT_BG":  "#1B1E24",
+    "C_OK":        "#3DDC97",
+    "C_ERR":       "#FF6B6B",
+    "C_WARN":      "#F0B44C",
+    "C_HOVER":     "#2C313A",
+    "C_PANEL":     "#1F2229",
+}
+
+# 当前主题（模块级变量，供各控件读取）
+C_BG        = LIGHT["C_BG"]
+C_CARD      = LIGHT["C_CARD"]
+C_PRIMARY   = LIGHT["C_PRIMARY"]
+C_PRIMARY_D = LIGHT["C_PRIMARY_D"]
+C_TEXT      = LIGHT["C_TEXT"]
+C_SUB       = LIGHT["C_SUB"]
+C_BORDER    = LIGHT["C_BORDER"]
+C_INPUT_BG  = LIGHT["C_INPUT_BG"]
+C_OK        = LIGHT["C_OK"]
+C_ERR       = LIGHT["C_ERR"]
+C_WARN      = LIGHT["C_WARN"]
+C_HOVER     = LIGHT["C_HOVER"]
+C_PANEL     = LIGHT["C_PANEL"]
+
+
+def apply_theme(name):
+    """切换模块级配色变量，返回主题字典"""
+    global C_BG, C_CARD, C_PRIMARY, C_PRIMARY_D, C_TEXT, C_SUB
+    global C_BORDER, C_INPUT_BG, C_OK, C_ERR, C_WARN, C_HOVER, C_PANEL
+
+    pal = DARK if name == "dark" else LIGHT
+    C_BG        = pal["C_BG"]
+    C_CARD      = pal["C_CARD"]
+    C_PRIMARY   = pal["C_PRIMARY"]
+    C_PRIMARY_D = pal["C_PRIMARY_D"]
+    C_TEXT      = pal["C_TEXT"]
+    C_SUB       = pal["C_SUB"]
+    C_BORDER    = pal["C_BORDER"]
+    C_INPUT_BG  = pal["C_INPUT_BG"]
+    C_OK        = pal["C_OK"]
+    C_ERR       = pal["C_ERR"]
+    C_WARN      = pal["C_WARN"]
+    C_HOVER     = pal["C_HOVER"]
+    C_PANEL     = pal["C_PANEL"]
+    return pal
 
 FONT_MAIN = ("Microsoft YaHei UI", 10)
 FONT_SM   = ("Microsoft YaHei UI", 9)
@@ -64,6 +122,15 @@ class App(tk.Tk):
         self.title("SolidWorks 零件生成器")
         self.geometry("1180x740")
         self.minsize(1040, 660)
+
+        # 先读主题并应用（必须在建控件之前）
+        try:
+            saved = cfg.load_config().get("theme") or "light"
+        except Exception:
+            saved = "light"
+        self.current_theme = saved if saved in ("light", "dark") else "light"
+        apply_theme(self.current_theme)
+
         self.configure(bg=C_BG)
 
         # 状态
@@ -133,12 +200,79 @@ class App(tk.Tk):
         self.btn_keys.bind("<Enter>", lambda e: self.btn_keys.config(bg=C_PRIMARY_D))
         self.btn_keys.bind("<Leave>", lambda e: self.btn_keys.config(bg=C_PRIMARY))
 
+        # 深色模式切换按钮
+        self.btn_theme = tk.Button(
+            right, text=("☀ 浅色" if self.current_theme == "dark" else "🌙 深色"),
+            font=FONT_SM, command=self.toggle_theme,
+            bg=C_CARD, fg=C_TEXT,
+            activebackground=C_HOVER, activeforeground=C_TEXT,
+            relief="flat", bd=0, cursor="hand2", padx=12, pady=6,
+            highlightbackground=C_BORDER, highlightthickness=1)
+        self.btn_theme.pack(side="left", padx=(0, 8))
+
         self._refresh_key_status()
 
-    # ---------------- Key 管理弹窗 ----------------
+    # ---------------- 主题切换 ----------------
+    def toggle_theme(self):
+        """浅色 <-> 深色"""
+        new = "dark" if self.current_theme == "light" else "light"
+        self.set_theme(new)
+
+    def set_theme(self, name):
+        """应用主题并重建界面"""
+        self.current_theme = name
+
+        # 保存到配置
+        try:
+            d = cfg.load_config()
+            d["theme"] = name
+            cfg.save_config(d)
+        except Exception:
+            pass
+
+        # 切换配色
+        apply_theme(name)
+
+        # 重建全部界面（配色是模块级变量，控件创建时读取）
+        self._rebuild_ui()
+
+    def _rebuild_ui(self):
+        """按当前主题重建整个界面"""
+        # 记住当前页面
+        cur_page = "home"
+        for nm, p in getattr(self, "pages", {}).items():
+            if p.winfo_ismapped():
+                cur_page = nm
+                break
+
+        # 销毁旧控件
+        for w in self.winfo_children():
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        self.pages = {}
+
+        # 重建
+        self.configure(bg=C_BG)
+        self._setup_style()
+        self._build_topbar()
+        self.container = tk.Frame(self, bg=C_BG)
+        self.container.pack(fill="both", expand=True)
+        self._create_pages()
+
+        try:
+            self.show_page(cur_page)
+        except Exception:
+            self.show_page("home")
+
     def open_key_dialog(self):
         """打开 API Key 管理窗口"""
         KeyDialog(self, self)
+
+    def open_path_dialog(self):
+        """打开保存路径设置窗口"""
+        PathDialog(self, self)
 
     def _refresh_current_label(self):
         """刷新顶栏「当前模型」显示"""
@@ -523,6 +657,249 @@ class KeyDialog(tk.Toplevel):
         except Exception:
             pass
         self.grab_release()
+        self.destroy()
+
+
+# ==================== 保存路径设置弹窗 ====================
+class PathDialog(tk.Toplevel):
+    """
+    模型文件保存路径设置窗口。
+
+    两行：
+      1. SolidWorks 文件存放地址
+      2. 3D 打印文件存放地址（默认跟随第一行）
+    每行路径可选中复制，下面有「更改路径」按钮。
+    """
+
+    def __init__(self, parent, app):
+        super().__init__(parent)
+        self.app = app
+
+        self.title("模型文件保存路径")
+        self.configure(bg=C_BG)
+        self.resizable(False, False)
+        self.transient(parent)
+
+        W, H = 640, 420
+        try:
+            parent.update_idletasks()
+            px = parent.winfo_rootx() + (parent.winfo_width() - W) // 2
+            py = parent.winfo_rooty() + (parent.winfo_height() - H) // 2
+            self.geometry(f"{W}x{H}+{max(0, px)}+{max(0, py)}")
+        except Exception:
+            self.geometry(f"{W}x{H}")
+
+        # 当前路径
+        self.model_path = cfg.get_model_dir()
+        self.print_path = cfg.get_print_dir()
+
+        self._build()
+        self.grab_set()
+        self.focus_force()
+
+    def _build(self):
+        # 标题栏
+        head = tk.Frame(self, bg=C_CARD, height=64)
+        head.pack(fill="x")
+        head.pack_propagate(False)
+        tk.Frame(head, bg=C_BORDER, height=1).pack(side="bottom", fill="x")
+
+        hl = tk.Frame(head, bg=C_CARD)
+        hl.pack(side="left", padx=20, pady=12)
+        tk.Label(hl, text="📁", font=("Segoe UI Emoji", 14),
+                 bg=C_CARD, fg=C_TEXT).pack(side="left")
+        tk.Label(hl, text="模型文件保存路径", font=("Microsoft YaHei UI", 13, "bold"),
+                 fg=C_TEXT, bg=C_CARD).pack(side="left", padx=(8, 0))
+        tk.Label(hl, text="生成的零件文件放在哪里", font=("Microsoft YaHei UI", 9),
+                 fg=C_SUB, bg=C_CARD).pack(side="left", padx=(10, 0))
+
+        body = tk.Frame(self, bg=C_BG)
+        body.pack(fill="both", expand=True, padx=18, pady=14)
+
+        # ---- 第一行：SolidWorks 文件 ----
+        self.entry_model, self.lbl_status_model = self._mk_path_row(
+            body,
+            "SolidWorks 文件存放地址",
+            "生成的 .SLDPRT 零件文件会保存到这里",
+            self.model_path,
+            lambda: self.change_path("model"))
+
+        # ---- 第二行：3D 打印文件 ----
+        self.entry_print, self.lbl_status_print = self._mk_path_row(
+            body,
+            "3D 打印文件存放地址",
+            "导出的 .STL 文件会保存到这里（默认与上面相同）",
+            self.print_path,
+            lambda: self.change_path("print"))
+
+        # ---- 底部按钮 ----
+        foot = tk.Frame(self, bg=C_CARD)
+        foot.pack(fill="x", side="bottom")
+        tk.Frame(foot, bg=C_BORDER, height=1).pack(fill="x")
+
+        fin = tk.Frame(foot, bg=C_CARD)
+        fin.pack(fill="x", padx=18, pady=12)
+
+        reset_btn = tk.Button(
+            fin, text="恢复默认", font=("Microsoft YaHei UI", 9),
+            command=self.reset_default,
+            bg="#FFFFFF", fg=C_SUB,
+            activebackground=C_HOVER, relief="flat", bd=0,
+            cursor="hand2", padx=14, pady=5,
+            highlightbackground=C_BORDER, highlightthickness=1)
+        reset_btn.pack(side="left")
+
+        close_btn = tk.Button(
+            fin, text="完成", font=("Microsoft YaHei UI", 10),
+            command=self.close,
+            bg=C_PRIMARY, fg="#FFFFFF",
+            activebackground=C_PRIMARY_D, activeforeground="#FFFFFF",
+            relief="flat", bd=0, cursor="hand2", padx=22, pady=6)
+        close_btn.pack(side="right")
+
+        self.bind("<Escape>", lambda e: self.close())
+
+    def _mk_path_row(self, parent, title, hint, path, on_change):
+        """一行路径设置"""
+        card = tk.Frame(parent, bg=C_CARD, highlightbackground=C_BORDER,
+                        highlightthickness=1)
+        card.pack(fill="x", pady=(0, 12))
+
+        inner = tk.Frame(card, bg=C_CARD)
+        inner.pack(fill="x", padx=14, pady=12)
+
+        tk.Label(inner, text=title, font=("Microsoft YaHei UI", 9, "bold"),
+                 fg=C_TEXT, bg=C_CARD).pack(anchor="w")
+        tk.Label(inner, text=hint, font=("Microsoft YaHei UI", 8),
+                 fg=C_SUB, bg=C_CARD).pack(anchor="w", pady=(2, 6))
+
+        # 路径文本框（只读但可选中复制）
+        wrap = tk.Frame(inner, bg=C_INPUT_BG, highlightbackground=C_BORDER,
+                        highlightthickness=1)
+        wrap.pack(fill="x")
+
+        ent = tk.Entry(wrap, font=("Consolas", 9), bg=C_INPUT_BG, fg=C_TEXT,
+                       relief="flat", bd=0, insertbackground=C_TEXT,
+                       readonlybackground=C_INPUT_BG)
+        ent.insert(0, path)
+        ent.config(state="readonly")
+        ent.pack(fill="x", padx=8, pady=6)
+
+        # 点击就能全选，方便 Ctrl+C
+        def on_click(e):
+            ent.config(state="normal")
+            ent.select_range(0, "end")
+            ent.icursor("end")
+            ent.config(state="readonly")
+            return "break"
+
+        ent.bind("<Button-1>", on_click)
+
+        # 按钮行：更改路径 + 状态提示
+        btn_row = tk.Frame(inner, bg=C_CARD)
+        btn_row.pack(fill="x", pady=(8, 0))
+
+        btn = tk.Button(
+            btn_row, text="更改路径", font=("Microsoft YaHei UI", 9),
+            command=on_change,
+            bg=C_PRIMARY, fg="#FFFFFF",
+            activebackground=C_PRIMARY_D, activeforeground="#FFFFFF",
+            relief="flat", bd=0, cursor="hand2", padx=14, pady=4)
+        btn.pack(side="left")
+
+        status = tk.Label(btn_row, text="", font=("Microsoft YaHei UI", 8),
+                          fg=C_SUB, bg=C_CARD, anchor="w")
+        status.pack(side="left", padx=(10, 0))
+
+        return ent, status
+
+    # ---------------- 操作 ----------------
+    def change_path(self, which):
+        """弹出资源管理器选择新路径（两个按钮完全独立）"""
+        is_model = (which == "model")
+        cur = self.model_path if is_model else self.print_path
+        title = ("选择 SolidWorks 文件存放位置"
+                 if is_model else "选择 3D 打印文件存放位置")
+
+        # 用一个可见的普通窗口做父窗口，保证对话框焦点正常、能置顶
+        new = filedialog.askdirectory(
+            parent=self, title=title, initialdir=cur, mustexist=True)
+        if not new:
+            return
+
+        new = os.path.normpath(new)
+        if not os.path.isdir(new):
+            messagebox.showwarning("路径无效",
+                                   f"文件夹不存在：\n{new}", parent=self)
+            return
+
+        # 检查可写
+        try:
+            test = os.path.join(new, ".swpg_write_test")
+            with open(test, "w", encoding="utf-8") as f:
+                f.write("x")
+            os.remove(test)
+        except Exception as e:
+            messagebox.showerror("没有写入权限",
+                                 f"这个文件夹不能写入：\n{new}\n\n{e}",
+                                 parent=self)
+            return
+
+        # ---- 保存并立即更新对应文本框 ----
+        if is_model:
+            ok = cfg.set_model_dir(new)
+            if not ok:
+                messagebox.showerror("保存失败",
+                                     "写入配置文件失败，请检查磁盘空间。",
+                                     parent=self)
+                return
+            self.model_path = new
+            self._set_entry(self.entry_model, new)   # 只更新第一行
+
+            # 状态提示
+            self.lbl_status_model.config(
+                text=f"✓ 已更新：{new}", fg=C_OK)
+        else:
+            ok = cfg.set_print_dir(new)
+            if not ok:
+                messagebox.showerror("保存失败",
+                                     "写入配置文件失败，请检查磁盘空间。",
+                                     parent=self)
+                return
+            self.print_path = new
+            self._set_entry(self.entry_print, new)   # 只更新第二行
+
+            self.lbl_status_print.config(
+                text=f"✓ 已更新：{new}", fg=C_OK)
+
+    def reset_default(self):
+        """恢复默认（系统下载文件夹）"""
+        if not messagebox.askyesno("恢复默认",
+                                   "两个路径都恢复到系统「下载」文件夹？",
+                                   parent=self):
+            return
+        cfg.reset_paths()
+        self.model_path = cfg.get_model_dir()
+        self.print_path = cfg.get_print_dir()
+        self._set_entry(self.entry_model, self.model_path)
+        self._set_entry(self.entry_print, self.print_path)
+        self.lbl_status_model.config(
+            text=f"✓ 已恢复默认：{self.model_path}", fg=C_OK)
+        self.lbl_status_print.config(
+            text=f"✓ 已恢复默认：{self.print_path}", fg=C_OK)
+
+    @staticmethod
+    def _set_entry(ent, text):
+        ent.config(state="normal")
+        ent.delete(0, "end")
+        ent.insert(0, text)
+        ent.config(state="readonly")
+
+    def close(self):
+        try:
+            self.grab_release()
+        except Exception:
+            pass
         self.destroy()
 
 
@@ -1049,6 +1426,20 @@ class DesignPage(tk.Frame):
         right.pack_propagate(False)
         ri = tk.Frame(right, bg=C_CARD)
         ri.pack(fill="both", expand=True, padx=20, pady=18)
+
+        # ============ 模型文件保存路径（可点击）============
+        self.btn_path = tk.Button(
+            ri, text="📁  模型文件保存路径", font=FONT_MAIN,
+            command=self.app.open_path_dialog,
+            bg=C_INPUT_BG, fg=C_TEXT,
+            activebackground=C_HOVER, activeforeground=C_TEXT,
+            relief="flat", bd=0, cursor="hand2", pady=8,
+            highlightbackground=C_BORDER, highlightthickness=1)
+        self.btn_path.pack(fill="x", pady=(0, 12))
+        self.btn_path.bind("<Enter>",
+                           lambda e: self.btn_path.config(bg=C_HOVER))
+        self.btn_path.bind("<Leave>",
+                           lambda e: self.btn_path.config(bg=C_INPUT_BG))
 
         tk.Label(ri, text="设计状态", font=FONT_MAIN, fg=C_TEXT,
                  bg=C_CARD).pack(anchor="w")
@@ -1586,7 +1977,9 @@ class DesignPage(tk.Frame):
             name_en = spec.get("part_name_en", "part")
             name_en = "".join(c for c in name_en if c.isalnum() or c == "_") or "part"
             base_name = f"{spec.get('part_name','零件')}_{name_en}"
-            dl = cfg.get_downloads_dir()
+            # 用用户设置的保存路径
+            dl = cfg.get_model_dir()
+            os.makedirs(dl, exist_ok=True)
             save_path = os.path.join(dl, base_name + ".SLDPRT")
 
             result = builder.build(spec, save_path)
@@ -1669,7 +2062,14 @@ class DesignPage(tk.Frame):
             return
 
         part_path = self._last_result["path"]
-        stl_path = os.path.splitext(part_path)[0] + ".stl"
+        # STL 放在用户设置的 3D 打印目录（文件名跟零件一致）
+        stl_dir = cfg.get_print_dir()
+        try:
+            os.makedirs(stl_dir, exist_ok=True)
+        except Exception:
+            stl_dir = os.path.dirname(part_path)
+        stl_path = os.path.join(
+            stl_dir, os.path.splitext(os.path.basename(part_path))[0] + ".stl")
 
         self.app._busy = True
         self.btn_print.config(state="disabled", text="导出中…")
