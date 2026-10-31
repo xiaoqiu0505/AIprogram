@@ -26,7 +26,7 @@ APP_NAME = "SolidWorksPartGen"
 CONFIG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), APP_NAME)
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
-API_TIMEOUT = 180   # 秒
+API_TIMEOUT = 300   # 秒（生成 VBA 宏代码较慢，实测约 150 秒）
 
 # ==================== 服务商定义 ====================
 # api_type: "openai" = OpenAI 兼容接口 / "anthropic" = Anthropic Messages API
@@ -349,6 +349,31 @@ def set_print_dir(path: str) -> bool:
     try:
         cfg_data = load_config()
         cfg_data.setdefault("paths", {})["print_dir"] = path
+        save_config(cfg_data)
+        return True
+    except Exception:
+        return False
+
+
+def get_assembly_dir() -> str:
+    """
+    取「组装输出」目录（图纸 / 装配方案 / 宏 / 说明书都存这里）。
+    未设置时跟随模型目录。
+    """
+    cfg_data = load_config()
+    p = (cfg_data.get("paths") or {}).get("assembly_dir", "")
+    if p and os.path.isdir(p):
+        return p
+    return get_model_dir()
+
+
+def set_assembly_dir(path: str) -> bool:
+    """设置组装输出目录，成功返回 True"""
+    if not path or not os.path.isdir(path):
+        return False
+    try:
+        cfg_data = load_config()
+        cfg_data.setdefault("paths", {})["assembly_dir"] = path
         save_config(cfg_data)
         return True
     except Exception:

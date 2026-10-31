@@ -59,6 +59,7 @@ def build():
         "--hidden-import", "assembly",
         "--hidden-import", "blueprint",
         "--hidden-import", "gpu_info",
+        "--hidden-import", "sw_macro",
         "--hidden-import", "part_reader",
         "--hidden-import", "sketchpad",
         "--hidden-import", "filedrop",

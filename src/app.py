@@ -464,6 +464,13 @@ class App(tk.Tk):
             if it.get("preview_png") and os.path.exists(it["preview_png"]):
                 previews.append(it["preview_png"])
 
+        # ★ 组装输出目录（可在组装页单独设置）
+        out_dir = cfg.get_assembly_dir()
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception:
+            out_dir = os.environ.get("TEMP", ".")
+
         # 弹出进度窗口
         win = tk.Toplevel(self)
         win.title("AI 正在组装")
@@ -506,29 +513,46 @@ class App(tk.Tk):
             except Exception:
                 pass
 
-        def done_ok(spec, out_path):
+        def done_ok(spec, produced):
             try:
                 pb.stop()
-                lbl.config(text="✓ 装配方案已生成", fg=C_OK)
-                upd_log(f"已保存：{out_path}")
+                lbl.config(text="✓ 组装文件已生成", fg=C_OK)
+                upd_log(f"输出目录：{os.path.dirname(produced['json'])}")
                 btn_close.config(state="normal", text="完成")
             except Exception:
                 pass
-            # 显示结果
+
             try:
+                files = []
+                files.append(f"📄 {os.path.basename(produced['json'])}")
+                if produced.get("macro"):
+                    files.append(f"⚙ {os.path.basename(produced['macro'])}"
+                                 f"（SolidWorks 宏）")
+                if produced.get("guide"):
+                    files.append(f"📖 {os.path.basename(produced['guide'])}"
+                                 f"（操作说明）")
+                file_list = "\n  ".join(files)
+
+                extra = ""
+                if produced.get("macro_error"):
+                    extra = (f"\n\n⚠ 宏文件生成失败："
+                             f"{produced['macro_error']}")
+
                 messagebox.showinfo(
                     "组装完成",
-                    f"AI 已给出装配方案：\n\n"
-                    f"  装配体名称：{spec.get('assembly_name', '未命名')}\n"
-                    f"  零件数量：{len(spec.get('parts', []))}\n"
-                    f"  配合关系：{len(spec.get('mates', []))} 个\n\n"
-                    f"图纸：{bp_path}\n"
-                    f"方案：{out_path}",
+                    f"装配体：{spec.get('assembly_name', '未命名')}\n"
+                    f"零件数：{len(spec.get('parts', []))} 个\n"
+                    f"配合关系：{len(spec.get('mates', []))} 个\n\n"
+                    f"已生成文件：\n  {file_list}{extra}\n\n"
+                    f"保存位置：\n{os.path.dirname(produced['json'])}\n\n"
+                    f"★ 没有 SolidWorks 也没关系 —— \n"
+                    f"把 .swp 宏文件拷到一台装了 SolidWorks 的电脑上，\n"
+                    f"按「操作说明」里 4 步就能自动生成装配体。",
                     parent=win)
             except Exception:
                 pass
             try:
-                os.startfile(os.path.dirname(out_path))
+                os.startfile(os.path.dirname(produced["json"]))
             except Exception:
                 pass
 
@@ -554,17 +578,45 @@ class App(tk.Tk):
                     preview_images=previews,
                     provider=pid)
 
-                # 保存装配方案（JSON，放模型目录）
-                out_dir = cfg.get_model_dir()
-                os.makedirs(out_dir, exist_ok=True)
+                # ---- 1. 保存装配方案 JSON ----
                 nm = spec.get("assembly_name", "装配体")
                 nm_en = spec.get("assembly_name_en", "Assembly")
-                nm_en = "".join(c for c in nm_en if c.isalnum() or c == "_") or "Assembly"
+                nm_en = "".join(c for c in nm_en
+                                if c.isalnum() or c == "_") or "Assembly"
                 out_path = os.path.join(out_dir, f"{nm}_{nm_en}_装配方案.json")
                 with open(out_path, "w", encoding="utf-8") as f:
                     json.dump(spec, f, ensure_ascii=False, indent=2)
 
-                self.after(0, lambda: done_ok(spec, out_path))
+                # ---- 2. 生成 SolidWorks 宏 ----
+                import sw_macro
+                macro_code = sw_macro._clean_vba(spec.get("macro_code", ""))
+                produced = {"json": out_path, "macro": None,
+                            "macro_code": macro_code}
+
+                if macro_code:
+                    try:
+                        swp, swb, txt = sw_macro.save_macro(
+                            macro_code, out_dir, base_name=nm)
+                        produced["macro"] = swp
+                        produced["macro_swb"] = swb
+                        produced["macro_txt"] = txt
+                    except Exception as e:
+                        produced["macro_error"] = str(e)
+
+                # ---- 3. 生成中文操作说明 ----
+                try:
+                    md, quick = sw_macro.build_steps_markdown(spec, out_dir)
+                    md_path = os.path.join(out_dir, f"{nm}_操作说明.md")
+                    txt_path = os.path.join(out_dir, f"{nm}_操作说明.txt")
+                    with open(md_path, "w", encoding="utf-8") as f:
+                        f.write(md)
+                    with open(txt_path, "w", encoding="utf-8") as f:
+                        f.write(quick)
+                    produced["guide"] = txt_path
+                except Exception:
+                    pass
+
+                self.after(0, lambda: done_ok(spec, produced))
             except Exception as e:
                 self.after(0, lambda err=e: done_err(err))
             finally:

@@ -1342,10 +1342,16 @@ class AssemblyPage(tk.Frame):
                          lambda: self.app.show_page("choice"),
                          kind="ghost").pack(side="left")
 
-        tk.Label(wrap, text="组装零件", font=FONT_XL, fg=t["TEXT"],
-                 bg=t["BG"]).pack(anchor="w", pady=(16, 4))
+        # ★ 组装输出路径（独立一行，放在 wrap 里）
+        self._mk_path_row(wrap)
+
+        title_row = tk.Frame(wrap, bg=t["BG"])
+        title_row.pack(fill="x", pady=(16, 4))
+        tk.Label(title_row, text="组装零件", font=FONT_XL, fg=t["TEXT"],
+                 bg=t["BG"]).pack(side="left")
         tk.Label(wrap,
-                 text="上传多个零件文件，然后拖到 3D 组装区里摆放。",
+                 text="上传多个零件文件，然后拖到 3D 组装区里摆放。"
+                      "点「完成组装」后 AI 会生成 SolidWorks 宏文件。",
                  font=FONT_S, fg=t["SUB"], bg=t["BG"]).pack(anchor="w",
                                                             pady=(0, 16))
 
@@ -1423,6 +1429,101 @@ class AssemblyPage(tk.Frame):
         self.lbl_status = tk.Label(foot, text="", font=FONT_S,
                                    fg=t["SUB"], bg=t["BG"])
         self.lbl_status.pack(side="left", padx=(14, 0))
+
+    def _mk_path_row(self, parent):
+        """组装页顶部：显示 / 修改输出目录（独立一行，避免被挤掉）"""
+        t = _T()
+
+        row = tk.Frame(parent, bg=t["BG"])
+        row.pack(fill="x", pady=(8, 0))
+
+        tk.Label(row, text="📁 组装文件保存位置", font=FONT_S, fg=t["SUB"],
+                 bg=t["BG"]).pack(side="left", padx=(0, 8))
+
+        # 先放右侧两个按钮（保证不被路径标签挤掉）
+        btn_open = tk.Button(
+            row, text="打开", font=("Microsoft YaHei UI", 8),
+            command=self.open_out_dir,
+            bg=t["CARD"], fg=t["SUB"], activebackground=t["HOVER"],
+            relief="flat", bd=0, cursor="hand2", padx=10, pady=4,
+            highlightbackground=t["BORDER"], highlightthickness=1)
+        btn_open.pack(side="right", padx=(4, 0))
+
+        btn = tk.Button(
+            row, text="更改路径", font=("Microsoft YaHei UI", 8),
+            command=self.change_out_dir,
+            bg=t["CARD"], fg=t["TEXT"], activebackground=t["HOVER"],
+            relief="flat", bd=0, cursor="hand2", padx=10, pady=4,
+            highlightbackground=t["BORDER"], highlightthickness=1)
+        btn.pack(side="right", padx=(6, 0))
+
+        cur = cfg.get_assembly_dir()
+        self.lbl_out_dir = tk.Label(
+            row, text=self._short_path(cur), font=FONT_S, fg=t["TEXT"],
+            bg=t["INPUT"], anchor="w", padx=8, pady=4,
+            highlightbackground=t["BORDER"], highlightthickness=1)
+        self.lbl_out_dir.pack(side="left", fill="x", expand=True)
+        self._out_dir = cur
+
+    @staticmethod
+    def _short_path(p, maxlen=42):
+        """路径太长时省略中间"""
+        if not p:
+            return ""
+        if len(p) <= maxlen:
+            return p
+        keep = maxlen - 3
+        head = keep // 2
+        tail = keep - head
+        return p[:head] + "..." + p[-tail:]
+
+    def change_out_dir(self):
+        """更改组装输出目录"""
+        from tkinter import filedialog
+        t = _T()
+        cur = cfg.get_assembly_dir()
+        new = filedialog.askdirectory(
+            parent=self, title="选择组装文件的保存位置",
+            initialdir=cur if os.path.isdir(cur) else None,
+            mustexist=True)
+        if not new:
+            return
+
+        if not cfg.set_assembly_dir(new):
+            messagebox.showerror(
+                "设置失败",
+                f"无法保存到：\n{new}\n\n请确认这个文件夹有写入权限。",
+                parent=self)
+            return
+
+        # 验证能写
+        try:
+            test_file = os.path.join(new, "_write_test_.tmp")
+            with open(test_file, "w") as f:
+                f.write("ok")
+            os.remove(test_file)
+        except Exception as e:
+            messagebox.showerror(
+                "没有写入权限",
+                f"这个文件夹不能写入：\n{new}\n\n{e}",
+                parent=self)
+            return
+
+        self._out_dir = new
+        try:
+            self.lbl_out_dir.config(text=self._short_path(new),
+                                    fg=t["OK"])
+        except Exception:
+            pass
+
+    def open_out_dir(self):
+        """打开输出目录"""
+        d = cfg.get_assembly_dir()
+        try:
+            os.makedirs(d, exist_ok=True)
+            os.startfile(d)
+        except Exception as e:
+            messagebox.showerror("打不开文件夹", str(e), parent=self)
 
     def _show_empty_hint(self):
         t = _T()

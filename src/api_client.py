@@ -506,7 +506,7 @@ def _analyze_request_once(provider, api_key, user_text, imgs, info,
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=API_TIMEOUT)
     except requests.exceptions.Timeout:
-        raise APIError(f"{info['name']} 思考超时（超过 3 分钟），请简化需求后重试",
+        raise APIError(f"{info['name']} 请求超时（超过 5 分钟），请简化需求后重试",
                        provider=provider)
     except requests.exceptions.ConnectionError:
         raise APIError(f"无法连接 {info['name']} 服务器，请检查网络或代理",
@@ -549,90 +549,86 @@ def _analyze_request_once(provider, api_key, user_text, imgs, info,
 
 
 # ==================== 组装图纸 → AI ====================
-ASSEMBLY_PROMPT = """你是一个 SolidWorks 装配体专家。
-用户已经把几个零件在 3D 界面里摆好了位置，并导出了一份「组装图纸」。
-你的任务是根据这份图纸，在 SolidWorks 里把这些零件装配成一个完整的装配体。
+ASSEMBLY_PROMPT = """你是一个 SolidWorks 二次开发专家。
+
+用户已经在一个 3D 界面里把几个零件摆好了位置，导出了「组装图纸」。
+你的任务是**生成一段 SolidWorks VBA 宏代码**，用户运行这个宏就能
+自动创建出对应的装配体（.SLDASM）。
+
+★★★ 极其重要：用户可能没有安装 SolidWorks ★★★
+所以不能依赖外部程序调 COM。你生成的宏必须是**自包含的 VBA 代码**，
+用户拿到 .swp 文件后：
+  · 在 SolidWorks 里：工具 → 宏 → 运行
+  · 或者双击 .swp 文件
+就能自动建出装配体。
 
 ★★★ 图纸格式说明 ★★★
-图纸是 JSON，关键字段：
+  · "unit": "mm"，所有长度毫米
+  · "coordinate_system": 右手系，Y 轴朝上
+  · "parts": 零件清单（index / file / path / size_mm 原始尺寸）
+  · "instances": 每个零件实例
+      - "part_index"：对应 parts 里哪一项
+      - "position_mm": [x, y, z] 平移位置
+      - "scale"：等比缩放系数（1.0 = 原始大小）
+      - "scaled"：是否被用户改过大小
+      - "size_mm"：缩放后的实际尺寸
+  · "modifications": ★ 被缩放的零件明细（original_scale / new_scale）
 
-· "unit": "mm"，所有长度都是毫米
-· "coordinate_system": 右手系，Y 轴朝上
-· "parts": 用到的所有零件文件（index / file / path / size_mm 原始尺寸）
-· "instances": 每个零件在场景里的实例
-    - "id": 实例编号
-    - "part_index": 对应 parts 里的哪一项
-    - "position_mm": [x, y, z] 平移位置
-    - "scale": 等比缩放系数（1.0 = 原始大小）
-    - "scaled": 是否被用户改过大小
-    - "size_mm": 缩放后的实际包围盒
-· "modifications": ★ 明确列出哪些零件被缩放过
-    - "original_scale" / "new_scale" / "change_percent"
-    - "original_size_mm" / "new_size_mm"
+★★★ 宏代码要求（必须严格遵守）★★★
+1. 用**后期绑定**：Dim swApp As Object / Set swApp = Application.SldWorks
+   （不需要引用类型库，兼容 SW 2010 到 2025 所有版本）
+2. 开头定义零件路径常量数组：
+       Dim PART_PATHS(0 To N) As String
+       PART_PATHS(0) = "C:\\零件\\底板.SLDPRT"
+   并加注释提醒用户改成自己的路径
+3. 对需要缩放的零件（modifications 里的）：
+       swApp.OpenDoc6 path, 1, 0, "", 0, 0
+       Set swModel = swApp.ActiveDoc
+       ' 插入缩放特征
+       swModel.Extension.SelectByID2 "零件实体名", "SOLIDBODY", 0,0,0, False, 0, Nothing, 0
+       swModel.InsertScale 1, False, True, scaleValue, False, False, False, False, 0
+       ' 参数：1=统一缩放(True), scaleValue 是倍数
+       swModel.Save
+       swApp.CloseDoc title
+   注意 InsertScale 参数顺序，统一缩放一定要 True（不能变形！）
+4. 新建装配体：
+       Dim asmTpl As String
+       asmTpl = swApp.GetUserPreferenceStringValue(9)   ' swDefaultTemplateAssembly
+       Set swAsm = swApp.NewDocument(asmTpl, 0, 0, 0)
+5. 插入零件（★ 位置单位是**米**，图纸是毫米，要 /1000）：
+       Set swAssy = swAsm
+       Set comp = swAssy.AddComponent5(path, 0, "", False, "", x/1000, y/1000, z/1000)
+6. 添加配合（可选，至少给同心/重合）：
+       boolstatus = swAsm.Extension.SelectByID2("零件名-1@装配体名", "COMPONENT", 0,0,0, True, 1, Nothing, 0)
+   简化起见：可以先只摆位置不加配合，在注释里说明
+7. 提速：swApp.CommandInProgress = True  ... 末尾 = False
+8. 保存：swAsm.SaveAs3 savePath, 0, 1
+9. 末尾 MsgBox "装配完成！", vbInformation, "AI 零件生成器"
+10. 所有变量都要 Dim，VBA 要求显式声明（建议加 Option Explicit 注释掉也行）
 
-★★★ 关键要求 ★★★
-1. **缩放必须是等比缩放**（SolidWorks 的「缩放」特征，选「统一缩放」），
-   绝不能改变零件的形状比例。用户只是让零件整体变大或变小。
-2. 被缩放的零件要用 modifications 里的 new_scale 数值
-3. 按 instances 的 position_mm 摆放各零件
-4. 装配时用标准配合（重合 / 同心 / 距离 / 平行）
-
-★★★ 输出格式 ★★★
-只输出一个 JSON，不要任何解释文字：
-
+★★★ 输出格式（严格 JSON，不能有任何多余文字）★★★
 {
-  "assembly_name": "组装体名称",
-  "assembly_name_en": "AssemblyName",
+  "assembly_name": "立柱支撑架",
+  "assembly_name_en": "PillarSupport",
   "summary": "一句话说明这是什么产品",
-  "parts": [
-    {
-      "part_index": 0,
-      "part_file": "底板.SLDPRT",
-      "scale": 1.0,
-      "scale_modified": false,
-      "note": "原始大小，不用缩放"
-    },
-    {
-      "part_index": 1,
-      "part_file": "立柱.SLDPRT",
-      "scale": 1.5,
-      "scale_modified": true,
-      "original_size_mm": [18, 70, 18],
-      "new_size_mm": [27, 105, 27],
-      "note": "用户放大了 1.5 倍，需用缩放特征统一缩放"
-    }
-  ],
-  "placements": [
-    {
-      "instance_id": "inst_0",
-      "part_file": "底板.SLDPRT",
-      "position_mm": [0, 0, 0],
-      "rotation_deg": [0, 0, 0],
-      "note": "放在原点作为基准"
-    }
-  ],
-  "mates": [
-    {
-      "type": "coincident",
-      "a": "底板顶面",
-      "b": "立柱底面",
-      "note": "立柱立在底板上面"
-    }
-  ],
+  "macro_code": "完整 VBA 代码，换行用 \\n 转义",
+  "part_paths": ["C:\\Users\\xxx\\底板.SLDPRT"],
   "steps": [
-    "1. 打开所有零件",
-    "2. 对需要缩放的零件执行缩放特征",
-    "3. 新建装配体，插入各零件",
-    "4. 按位置摆放并添加配合"
+    {"title": "1. 准备零件", "detail": "把所有零件放到同一个文件夹，记下路径"},
+    {"title": "2. 新建宏", "detail": "打开 SolidWorks → 工具 → 宏 → 新建，保存为 组装.swp"},
+    {"title": "3. 粘贴代码", "detail": "用记事本打开生成的 .swp，全选复制，粘贴到宏编辑器"},
+    {"title": "4. 改路径", "detail": "把代码顶部 PART_PATHS 数组改成你自己的零件路径"},
+    {"title": "5. 运行", "detail": "按 F5 或 工具 → 宏 → 运行"}
   ],
-  "dimensions": [
-    {"name": "整体高度", "value": 108.7, "unit": "mm"}
-  ]
+  "notes": ["注意事项"]
 }
 
-★ 如果某个零件不需要缩放，scale 填 1.0、scale_modified 填 false。
-★ mates 里的 a/b 用「零件名+几何特征」描述，比如「底板顶面」「立柱轴心」。
+★ macro_code 里**绝对不能有真正的换行符**，必须用 \\n 转义（JSON 字符串标准）。
+★ 不需要缩放的零件跳过缩放步骤。
+★ 宏必须能在「没打开任何文档」的状态下直接运行。
+★ 生成的代码要能在 SolidWorks 2020+ 上跑通，加完整的 On Error 处理。
 """
+
 
 
 def _build_assembly_text(blueprint_text: str, part_list=None,
@@ -738,7 +734,7 @@ def _assembly_request_once(provider, api_key, user_text, imgs, info,
         r = requests.post(url, headers=headers, json=payload,
                           timeout=API_TIMEOUT)
     except requests.exceptions.Timeout:
-        raise APIError(f"{info['name']} 思考超时（超过 3 分钟），"
+        raise APIError(f"{info['name']} 请求超时（超过 5 分钟），"
                        f"可能是零件太多，试试减少零件数量",
                        provider=provider)
     except requests.exceptions.ConnectionError:
@@ -763,6 +759,13 @@ def _assembly_request_once(provider, api_key, user_text, imgs, info,
     except Exception:
         raise APIError(f"{info['name']} 返回的不是有效 JSON", provider=provider)
 
+    # ★ 检查是否因 token 用尽被截断
+    finish = ""
+    try:
+        finish = data["choices"][0].get("finish_reason") or ""
+    except Exception:
+        pass
+
     try:
         answer, reasoning = _extract_answer(provider, data)
     except Exception as e:
@@ -770,6 +773,13 @@ def _assembly_request_once(provider, api_key, user_text, imgs, info,
 
     if not answer:
         # 内容为空 → 返回 None 让外层重试
+        if finish == "length":
+            # 明确告知：思考把预算吃光了
+            raise APIError(
+                f"{info['name']} 思考用完了输出长度（{len(reasoning)} 字思考，"
+                f"正文 0 字）。\n\n"
+                f"建议换一个模型，或减少零件数量后重试。",
+                provider=provider)
         return None
 
     spec = _extract_json(answer)
@@ -832,11 +842,12 @@ def _build_custom_request(provider, api_key, user_text, image_paths,
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": content},
         ],
-        "max_tokens": 8000,
+        # ★ 生成 VBA 宏代码很长，需要足够的输出空间
+        "max_tokens": 16000,
     }
-    if provider == "deepseek":
-        payload["thinking"] = {"type": "enabled"}
-        payload["reasoning_effort"] = "high"
+    # ★ 这里**不开深度思考**：实测 DeepSeek 生成宏时思考会吃掉全部
+    #   token 预算（reasoning 22436 字符 / 8000 token），导致 content 为空。
+    #   生成代码这类任务不需要长推理，直接输出更可靠。
     return url, headers, payload
 
 

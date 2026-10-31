@@ -748,6 +748,30 @@ AI 对零件理解有偏差。可以：
 
 ## 版本
 
+- **v5.0** — AI 生成 SolidWorks 宏 + 组装独立保存路径
+  - **★ 面向没装 SolidWorks 的用户**：
+    · 不再依赖程序调 COM 自动建模
+    · 让 AI 生成 **SolidWorks VBA 宏代码（.swp）**
+    · 用户把宏拷到任意装了 SW 的电脑，4 步就能自动生成装配体
+  - **新增 `sw_macro.py`**：
+    · 生成 .swp / .swb / .txt 三种格式（.txt 防编码问题）
+    · 自动生成中文操作说明 `xxx_操作说明.md` + 快速上手 `.txt`
+  - **AI 提示词重写**：要求生成后期绑定的完整 VBA 宏
+    · `Dim swApp As Object`（不依赖类型库，兼容 SW 2010~2025）
+    · `PART_PATHS` 常量数组（用户改路径）
+    · `InsertScale` 统一缩放（等比，不变形）
+    · `AddComponent5` 插入零件（毫米 → 米自动换算）
+    · `SaveAs3` 保存装配体 + `On Error` 错误处理
+  - **实测**：AI 生成 7427 字符 / 231 行完整宏代码
+  - **修复 AI 返回空内容**：生成宏时关掉深度思考
+    · 根因：深度思考把 8000 token 预算全用在 reasoning 上
+      （reasoning 22436 字，content 0 字，finish_reason=length）
+    · 现在 max_tokens 提到 16000、不开 thinking，149 秒正常返回
+    · 超时时间从 180 秒放宽到 300 秒
+  - **组装页新增独立保存路径**：
+    · 顶部「📁 组装文件保存位置」+「更改路径」+「打开」按钮
+    · 新增 `cfg.get_assembly_dir()` / `set_assembly_dir()`
+    · 图纸 / 装配方案 / 宏 / 操作说明都存这里，和单零件建模分开
 - **v4.7** — ★ 修复托盘零件点不动（关键 bug）
   - **现象**：点击零件托盘的卡片完全没反应，无法选中
   - **根本原因**：Tkinter 里 `<Button-1>` 和 `<ButtonPress-1>`
