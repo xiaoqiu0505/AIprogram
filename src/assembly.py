@@ -87,18 +87,24 @@ class Camera:
 class Viewer3D(tk.Canvas):
     """
     3D 渲染画布。
-    支持：
-      · 显示多个零件（每个有自己的三角面 + 位置 + 颜色）
-      · 右键拖拽旋转
-      · 滚轮缩放
+
+    交互：
+      · 左键点零件 = 选中
+      · 左键拖零件 = 在水平面 (XZ) 里移动
+      · 滚轮 = 缩放相机
+      · 右键拖 = 旋转视角
+      · Ctrl + 上下方向键 / Shift+滚轮 = 等比缩放选中的零件
     """
 
     def __init__(self, master, on_change=None, **kw):
         super().__init__(master, bg=_T()["INPUT"], highlightthickness=0, **kw)
         self.on_change = on_change
         self.cam = Camera()
-        self.items = []      # 已放置的零件 [{tris, pos, color, name}]
+        self.items = []      # 已放置的零件
+        self.selected = -1   # 当前选中的零件索引
         self._drag_rot = None
+        self._drag_item = None    # 正在拖动的零件
+        self._drag_start = None
         self._photos = []
 
         self.bind("<ButtonPress-3>", self._start_rot)
@@ -106,6 +112,18 @@ class Viewer3D(tk.Canvas):
         self.bind("<ButtonRelease-3>", self._end_rot)
         self.bind("<MouseWheel>", self._on_wheel)
         self.bind("<Configure>", lambda e: self.redraw())
+
+        # 左键：选中 + 拖动
+        self.bind("<ButtonPress-1>", self._on_left_press)
+        self.bind("<B1-Motion>", self._on_left_drag)
+        self.bind("<ButtonRelease-1>", self._on_left_release)
+
+        # 键盘缩放
+        self.bind("<Up>", lambda e: self.scale_selected(1.1))
+        self.bind("<Down>", lambda e: self.scale_selected(1 / 1.1))
+        self.bind("<Control-Up>", lambda e: self.scale_selected(1.25))
+        self.bind("<Control-Down>", lambda e: self.scale_selected(1 / 1.25))
+        self.configure(takefocus=1)
 
     # ---------- 相机操作 ----------
     def _start_rot(self, e):
@@ -127,9 +145,85 @@ class Viewer3D(tk.Canvas):
         self.config(cursor="")
 
     def _on_wheel(self, e):
+        # Shift + 滚轮 = 缩放选中零件；否则缩放相机
+        if (e.state & 0x0001) and self.selected >= 0:
+            self.scale_selected(1.08 if e.delta > 0 else 1 / 1.08)
+            return
         f = 1.12 if e.delta > 0 else 1 / 1.12
         self.cam.zoom = max(0.1, min(20, self.cam.zoom * f))
         self.redraw()
+
+    # ---------- 左键：选中 / 拖动 ----------
+    def _on_left_press(self, e):
+        idx = self._pick(e.x, e.y)
+        if idx >= 0:
+            self.selected = idx
+            self._drag_item = idx
+            self._drag_start = (e.x, e.y,
+                                self.items[idx]["pos"][0],
+                                self.items[idx]["pos"][2])
+            self.config(cursor="fleur")
+            self.focus_set()
+            self.redraw()
+        else:
+            self.selected = -1
+            self.redraw()
+
+    def _on_left_drag(self, e):
+        if self._drag_item is None or not self._drag_start:
+            return
+        x0, y0, ox, oz = self._drag_start
+        # 屏幕位移 → 世界位移（简单映射）
+        k = 1.0 / max(0.01, self.cam.scale)
+        # 屏幕 x 对应世界 x（近似），屏幕 y 对应世界 z
+        dx = (e.x - x0) * k * math.cos(self.cam.yaw)
+        dz = -(e.x - x0) * k * math.sin(self.cam.yaw)
+        dz += (e.y - y0) * k
+        item = self.items[self._drag_item]
+        item["pos"] = (ox + dx, item["pos"][1], oz + dz)
+        self.redraw()
+
+    def _on_left_release(self, e):
+        if self._drag_item is not None:
+            self._drag_item = None
+            self._drag_start = None
+            self.config(cursor="")
+            self._notify()
+
+    def _notify(self):
+        if self.on_change:
+            try:
+                self.on_change()
+            except Exception:
+                pass
+
+    def _pick(self, sx, sy, tol=26):
+        """屏幕坐标 → 最靠近的零件索引（按屏幕距离判断）"""
+        best = -1
+        bestd = tol
+        for i, it in enumerate(self.items):
+            if not it["tris"]:
+                continue
+            ox, oy, oz = it["pos"]
+            s = it.get("scale", 1.0)
+            # 用零件包围盒中心作为拾取点
+            xs, ys, zs = [], [], []
+            for (a, b, c) in it["tris"][:120]:
+                for v in (a, b, c):
+                    xs.append(v[0] * s + ox)
+                    ys.append(v[1] * s + oy)
+                    zs.append(v[2] * s + oz)
+            if not xs:
+                continue
+            cx = (min(xs) + max(xs)) / 2
+            cy = (min(ys) + max(ys)) / 2
+            cz = (min(zs) + max(zs)) / 2
+            px, py, _ = self.cam.project((cx, cy, cz))
+            d = math.hypot(px - sx, py - sy)
+            if d < bestd:
+                bestd = d
+                best = i
+        return best
 
     # ---------- 零件管理 ----------
     def add_part(self, part, pos=(0, 0, 0), color=None):
@@ -147,24 +241,52 @@ class Viewer3D(tk.Canvas):
             "color": color,
             "name": name,
             "bbox": part.get("bbox"),
+            "part": part,
+            "scale": 1.0,          # 等比缩放
+            "orig_scale": 1.0,
         })
+        self.selected = len(self.items) - 1
         self.redraw()
+        self._notify()
         return len(self.items) - 1
+
+    def scale_selected(self, factor):
+        """等比缩放当前选中的零件（不改形状，只改大小）"""
+        if not (0 <= self.selected < len(self.items)):
+            return
+        it = self.items[self.selected]
+        ns = it.get("scale", 1.0) * factor
+        ns = max(0.05, min(50.0, ns))
+        it["scale"] = ns
+        self.redraw()
+        self._notify()
+
+    def remove_selected(self):
+        if 0 <= self.selected < len(self.items):
+            self.items.pop(self.selected)
+            self.selected = -1
+            self.redraw()
+            self._notify()
 
     def clear_all(self):
         self.items = []
+        self.selected = -1
         self.redraw()
+        self._notify()
+
 
     # ---------- 渲染 ----------
     def _scene_bounds(self):
-        """所有零件的世界包围盒"""
+        """所有零件的世界包围盒（考虑等比缩放）"""
         xs, ys, zs = [], [], []
         for it in self.items:
+            ox, oy, oz = it["pos"]
+            s = it.get("scale", 1.0)
             for (a, b, c) in it["tris"]:
                 for v in (a, b, c):
-                    xs.append(v[0] + it["pos"][0])
-                    ys.append(v[1] + it["pos"][1])
-                    zs.append(v[2] + it["pos"][2])
+                    xs.append(v[0] * s + ox)
+                    ys.append(v[1] * s + oy)
+                    zs.append(v[2] * s + oz)
         if not xs:
             return None
         return (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs))
@@ -205,17 +327,19 @@ class Viewer3D(tk.Canvas):
         self.cam.cx = W / 2 - cxs * self.cam.scale
         self.cam.cy = H / 2 + cys * self.cam.scale
 
-        # 收集所有三角形（含世界坐标）
+        # 收集所有三角形（含世界坐标，应用等比缩放）
         faces = []
-        for it in self.items:
+        for idx, it in enumerate(self.items):
             ox, oy, oz = it["pos"]
+            s = it.get("scale", 1.0)
+            sel = (idx == self.selected)
             for (a, bb, c) in it["tris"]:
-                p0 = (a[0] + ox, a[1] + oy, a[2] + oz)
-                p1 = (bb[0] + ox, bb[1] + oy, bb[2] + oz)
-                p2 = (c[0] + ox, c[1] + oy, c[2] + oz)
+                p0 = (a[0] * s + ox, a[1] * s + oy, a[2] * s + oz)
+                p1 = (bb[0] * s + ox, bb[1] * s + oy, bb[2] * s + oz)
+                p2 = (c[0] * s + ox, c[1] * s + oy, c[2] * s + oz)
                 d = (self.cam.depth_of(p0) + self.cam.depth_of(p1)
                      + self.cam.depth_of(p2)) / 3.0
-                faces.append((d, p0, p1, p2, it["color"]))
+                faces.append((d, p0, p1, p2, it["color"], sel))
 
         # 远的先画
         faces.sort(key=lambda x: x[0])
@@ -225,7 +349,7 @@ class Viewer3D(tk.Canvas):
         ln = math.sqrt(lx * lx + ly * ly + lz * lz)
         lx, ly, lz = lx / ln, ly / ln, lz / ln
 
-        for (d, p0, p1, p2, base) in faces:
+        for (d, p0, p1, p2, base, sel) in faces:
             ux, uy, uz = p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]
             vx, vy, vz = p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]
             nx = uy * vz - uz * vy
@@ -236,6 +360,9 @@ class Viewer3D(tk.Canvas):
 
             lam = abs(nx * lx + ny * ly + nz * lz)
             shade = 0.35 + 0.65 * lam
+            # 选中的零件整体提亮，方便辨认
+            if sel:
+                shade = min(1.35, shade * 1.35)
             col = "#%02x%02x%02x" % tuple(
                 max(0, min(255, int(ch * shade))) for ch in base)
 
@@ -244,6 +371,16 @@ class Viewer3D(tk.Canvas):
             s2 = self.cam.project(p2)
             self.create_polygon(s0[0], s0[1], s1[0], s1[1], s2[0], s2[1],
                                fill=col, outline=col)
+
+        # 选中零件的说明
+        if 0 <= self.selected < len(self.items):
+            it = self.items[self.selected]
+            sc = it.get("scale", 1.0)
+            txt = f"已选中：{it['name']}"
+            if abs(sc - 1.0) > 1e-6:
+                txt += f"   缩放 {sc * 100:.0f}%（{sc:.3f}×）"
+            self.create_text(W / 2, 22, text=txt,
+                             font=FONT_S, fill="#4A7CFF")
 
         self._draw_axes(W, H, t)
 
@@ -322,12 +459,34 @@ class AssemblyWindow(tk.Toplevel):
                  bg=t["CARD"], fg=t["TEXT"]).pack(side="left")
         tk.Label(tl, text="3D 组装", font=FONT_L, fg=t["TEXT"],
                  bg=t["CARD"]).pack(side="left", padx=(8, 0))
-        tk.Label(tl, text="从下方拖零件到中央　·　右键拖拽旋转视角　·　滚轮缩放",
+        tk.Label(tl, text="拖零件到中央　·　左键选中/拖动　·　"
+                          "Shift+滚轮 或 ↑↓ 缩放　·　右键拖拽旋转",
                  font=FONT_S, fg=t["SUB"], bg=t["CARD"]).pack(side="left",
                                                              padx=(14, 0))
 
         tr = tk.Frame(top, bg=t["CARD"])
         tr.pack(side="right", padx=18)
+
+        # 缩放控制
+        self.btn_scale_dn = tk.Button(
+            tr, text="−", font=("Microsoft YaHei UI", 12, "bold"),
+            command=lambda: self.viewer.scale_selected(1 / 1.15),
+            bg=t["CARD"], fg=t["TEXT"], activebackground=t["HOVER"],
+            relief="flat", bd=0, cursor="hand2", padx=9, pady=1,
+            highlightbackground=t["BORDER"], highlightthickness=1)
+        self.btn_scale_dn.pack(side="left", padx=(0, 2))
+
+        self.lbl_scale = tk.Label(tr, text="100%", font=FONT_S,
+                                  fg=t["SUB"], bg=t["CARD"], width=6)
+        self.lbl_scale.pack(side="left")
+
+        self.btn_scale_up = tk.Button(
+            tr, text="+", font=("Microsoft YaHei UI", 12, "bold"),
+            command=lambda: self.viewer.scale_selected(1.15),
+            bg=t["CARD"], fg=t["TEXT"], activebackground=t["HOVER"],
+            relief="flat", bd=0, cursor="hand2", padx=9, pady=1,
+            highlightbackground=t["BORDER"], highlightthickness=1)
+        self.btn_scale_up.pack(side="left", padx=(2, 10))
 
         self.btn_clear = tk.Button(
             tr, text="清空组装区", font=FONT_S, command=self.clear_scene,
@@ -336,15 +495,24 @@ class AssemblyWindow(tk.Toplevel):
             highlightbackground=t["BORDER"], highlightthickness=1)
         self.btn_clear.pack(side="left", padx=(0, 8))
 
-        self.btn_close = tk.Button(
-            tr, text="关闭", font=FONT, command=self.destroy,
-            bg=t["PRIMARY"], fg="#FFFFFF", activebackground=t["PRIMARY_D"],
+        # ★ 完成组装
+        self.btn_done = tk.Button(
+            tr, text="✅  完成组装", font=FONT,
+            command=self.finish_assembly,
+            bg=t["OK"], fg="#FFFFFF", activebackground="#1a8a5a",
             activeforeground="#FFFFFF", relief="flat", bd=0,
             cursor="hand2", padx=18, pady=5)
+        self.btn_done.pack(side="left", padx=(0, 8))
+
+        self.btn_close = tk.Button(
+            tr, text="关闭", font=FONT, command=self.destroy,
+            bg=t["CARD"], fg=t["TEXT"], activebackground=t["HOVER"],
+            relief="flat", bd=0, cursor="hand2", padx=14, pady=5,
+            highlightbackground=t["BORDER"], highlightthickness=1)
         self.btn_close.pack(side="left")
 
         # 中央 3D
-        self.viewer = Viewer3D(self, on_change=None)
+        self.viewer = Viewer3D(self, on_change=self._on_scene_change)
         self.viewer.pack(fill="both", expand=True, padx=12, pady=(10, 0))
 
         # 下方托盘
@@ -450,6 +618,76 @@ class AssemblyWindow(tk.Toplevel):
             self.viewer.add_part(part, pos=(ox, 0, oz))
             self.placed.append(item)
         self._drag_item = None
+
+    # ---------- 场景变化 ----------
+    def _on_scene_change(self):
+        """场景内容变化时更新缩放显示"""
+        try:
+            sel = self.viewer.selected
+            if 0 <= sel < len(self.viewer.items):
+                sc = self.viewer.items[sel].get("scale", 1.0)
+                self.lbl_scale.config(text=f"{sc * 100:.0f}%")
+            else:
+                self.lbl_scale.config(text="—")
+        except Exception:
+            pass
+
+    # ---------- 完成组装 ----------
+    def finish_assembly(self):
+        """导出图纸 + 发给 AI 组装"""
+        if not self.viewer.items:
+            messagebox.showwarning(
+                "组装区是空的",
+                "请先把零件拖到中间的组装区，再点「完成组装」。",
+                parent=self)
+            return
+
+        # 保存图纸
+        import blueprint
+        t0 = time.time()
+        try:
+            bdata = blueprint.build_blueprint(
+                self.viewer.items, [{"path": it["part"].get("path"),
+                                     "part": it["part"]}
+                                    for it in self.parts
+                                    if it.get("part")])
+        except Exception as e:
+            messagebox.showerror("生成图纸失败", str(e), parent=self)
+            return
+
+        # 图纸路径（和零件放一起）
+        out_dir = cfg.get_model_dir()
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+        except Exception:
+            out_dir = os.environ.get("TEMP", ".")
+
+        name = bdata.get("assembly", {}).get("part_count", 0)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        bp_path = os.path.join(out_dir, f"组装图纸_{ts}.swbp")
+        try:
+            blueprint.save_blueprint(bdata, bp_path)
+        except Exception as e:
+            messagebox.showerror("保存图纸失败", str(e), parent=self)
+            return
+
+        n_mod = len(bdata.get("modifications", []))
+        # 询问用户是否继续发给 AI
+        msg = (f"图纸已保存：\n{bp_path}\n\n"
+               f"包含 {name} 个零件")
+        if n_mod:
+            msg += f"，其中 {n_mod} 个被缩放"
+        msg += "\n\n要把这张图纸发给 AI，让它生成装配体吗？"
+
+        if not messagebox.askyesno("完成组装", msg, parent=self):
+            try:
+                os.startfile(out_dir)
+            except Exception:
+                pass
+            return
+
+        # 关闭组装窗口，进入 AI 流程
+        self.app.run_assembly_ai(bdata, bp_path, self.parts, parent=self)
 
     def clear_scene(self):
         if not self.placed:

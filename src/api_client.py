@@ -511,6 +511,251 @@ def analyze_part(api_key: str, text_desc: str = "", image_path: str = None,
     return spec
 
 
+# ==================== 组装图纸 → AI ====================
+ASSEMBLY_PROMPT = """你是一个 SolidWorks 装配体专家。
+用户已经把几个零件在 3D 界面里摆好了位置，并导出了一份「组装图纸」。
+你的任务是根据这份图纸，在 SolidWorks 里把这些零件装配成一个完整的装配体。
+
+★★★ 图纸格式说明 ★★★
+图纸是 JSON，关键字段：
+
+· "unit": "mm"，所有长度都是毫米
+· "coordinate_system": 右手系，Y 轴朝上
+· "parts": 用到的所有零件文件（index / file / path / size_mm 原始尺寸）
+· "instances": 每个零件在场景里的实例
+    - "id": 实例编号
+    - "part_index": 对应 parts 里的哪一项
+    - "position_mm": [x, y, z] 平移位置
+    - "scale": 等比缩放系数（1.0 = 原始大小）
+    - "scaled": 是否被用户改过大小
+    - "size_mm": 缩放后的实际包围盒
+· "modifications": ★ 明确列出哪些零件被缩放过
+    - "original_scale" / "new_scale" / "change_percent"
+    - "original_size_mm" / "new_size_mm"
+
+★★★ 关键要求 ★★★
+1. **缩放必须是等比缩放**（SolidWorks 的「缩放」特征，选「统一缩放」），
+   绝不能改变零件的形状比例。用户只是让零件整体变大或变小。
+2. 被缩放的零件要用 modifications 里的 new_scale 数值
+3. 按 instances 的 position_mm 摆放各零件
+4. 装配时用标准配合（重合 / 同心 / 距离 / 平行）
+
+★★★ 输出格式 ★★★
+只输出一个 JSON，不要任何解释文字：
+
+{
+  "assembly_name": "组装体名称",
+  "assembly_name_en": "AssemblyName",
+  "summary": "一句话说明这是什么产品",
+  "parts": [
+    {
+      "part_index": 0,
+      "part_file": "底板.SLDPRT",
+      "scale": 1.0,
+      "scale_modified": false,
+      "note": "原始大小，不用缩放"
+    },
+    {
+      "part_index": 1,
+      "part_file": "立柱.SLDPRT",
+      "scale": 1.5,
+      "scale_modified": true,
+      "original_size_mm": [18, 70, 18],
+      "new_size_mm": [27, 105, 27],
+      "note": "用户放大了 1.5 倍，需用缩放特征统一缩放"
+    }
+  ],
+  "placements": [
+    {
+      "instance_id": "inst_0",
+      "part_file": "底板.SLDPRT",
+      "position_mm": [0, 0, 0],
+      "rotation_deg": [0, 0, 0],
+      "note": "放在原点作为基准"
+    }
+  ],
+  "mates": [
+    {
+      "type": "coincident",
+      "a": "底板顶面",
+      "b": "立柱底面",
+      "note": "立柱立在底板上面"
+    }
+  ],
+  "steps": [
+    "1. 打开所有零件",
+    "2. 对需要缩放的零件执行缩放特征",
+    "3. 新建装配体，插入各零件",
+    "4. 按位置摆放并添加配合"
+  ],
+  "dimensions": [
+    {"name": "整体高度", "value": 108.7, "unit": "mm"}
+  ]
+}
+
+★ 如果某个零件不需要缩放，scale 填 1.0、scale_modified 填 false。
+★ mates 里的 a/b 用「零件名+几何特征」描述，比如「底板顶面」「立柱轴心」。
+"""
+
+
+def _build_assembly_text(blueprint_text: str, part_list=None,
+                         preview_images=None) -> str:
+    """组装请求的文字部分"""
+    t = "这是用户组装好的零件图纸，请据此生成 SolidWorks 装配体方案。\n\n"
+    t += "=" * 50 + "\n"
+    t += blueprint_text
+    t += "\n" + "=" * 50
+    t += "\n\n【附带的零件文件】\n"
+    if part_list:
+        for i, p in enumerate(part_list):
+            sz = p.get("size_mm")
+            szs = (f"{sz[0]:.1f}×{sz[1]:.1f}×{sz[2]:.1f} mm"
+                   if sz else "未知")
+            t += f"  [{i}] {p.get('file', '?')}　原始尺寸 {szs}\n"
+    t += ("\n（下面的图片是各零件的 3D 预览，可用来判断零件形状、"
+          "识别哪些面该配合）\n")
+    return t
+
+
+def analyze_assembly(api_key: str, blueprint_data: dict,
+                     part_paths=None, preview_images=None,
+                     provider: str = "deepseek") -> dict:
+    """
+    让 AI 分析组装图纸，返回装配方案。
+
+    参数：
+        api_key:        API Key
+        blueprint_data: blueprint.build_blueprint() 生成的字典
+        part_paths:     零件文件路径列表（用于提示中列出材料）
+        preview_images: 零件预览图路径列表（可选，让 AI 看图）
+        provider:       服务商
+    """
+    import blueprint as bp
+
+    provider = provider if provider in cfg.PROVIDERS else "deepseek"
+    info = cfg.get_provider_info(provider)
+
+    # 图纸转文本
+    try:
+        bp_text = bp.blueprint_to_prompt(blueprint_data)
+    except Exception:
+        bp_text = json.dumps(blueprint_data, ensure_ascii=False, indent=2)
+
+    part_list = blueprint_data.get("parts", [])
+    user_text = _build_assembly_text(bp_text, part_list)
+
+    # 图片：优先用预览图
+    imgs = [p for p in (preview_images or []) if p and os.path.exists(p)]
+
+    url, headers, payload = _build_custom_request(
+        provider, api_key, user_text, imgs, ASSEMBLY_PROMPT)
+
+    try:
+        r = requests.post(url, headers=headers, json=payload,
+                          timeout=API_TIMEOUT)
+    except requests.exceptions.Timeout:
+        raise APIError(f"{info['name']} 思考超时（超过 3 分钟），"
+                       f"可能是零件太多，试试减少零件数量",
+                       provider=provider)
+    except requests.exceptions.ConnectionError:
+        raise APIError(f"无法连接 {info['name']} 服务器，请检查网络或代理",
+                       provider=provider)
+    except Exception as e:
+        raise APIError(f"网络异常：{e}", provider=provider)
+
+    if r.status_code != 200:
+        msg = _short_err(r, provider)
+        if r.status_code in (401, 403):
+            raise APIError(f"{info['name']} API Key 无效，请重新填写",
+                           r.status_code, provider)
+        if r.status_code == 429:
+            raise APIError(f"{info['name']} 请求过于频繁或额度不足",
+                           r.status_code, provider)
+        raise APIError(f"{info['name']} 请求失败（HTTP {r.status_code}）：{msg}",
+                       r.status_code, provider)
+
+    try:
+        data = r.json()
+    except Exception:
+        raise APIError(f"{info['name']} 返回的不是有效 JSON", provider=provider)
+
+    try:
+        answer, reasoning = _extract_answer(provider, data)
+    except Exception as e:
+        raise APIError(f"{info['name']} 返回格式异常：{e}", provider=provider)
+
+    if not answer:
+        raise APIError(f"{info['name']} 没有返回内容，请重试", provider=provider)
+
+    spec = _extract_json(answer)
+    if spec is None:
+        raise APIError(
+            f"{info['name']} 返回的内容不是有效的装配方案，请重试",
+            provider=provider)
+
+    spec["_reasoning"] = reasoning
+    spec["_raw"] = answer
+    spec["_provider"] = provider
+    return spec
+
+
+def _build_custom_request(provider, api_key, user_text, image_paths,
+                          system_prompt):
+    """通用的请求构造（自定义 system prompt）"""
+    info = cfg.get_provider_info(provider)
+    imgs = image_paths or []
+
+    if info.get("api_type") == "anthropic":
+        url = f"{info['base_url']}/v1/messages"
+        headers = {
+            "x-api-key": api_key.strip(),
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        content = []
+        for p in imgs:
+            b64, mime = _encode_image(p)
+            content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": mime, "data": b64},
+            })
+        content.append({"type": "text", "text": user_text})
+        payload = {
+            "model": info["model"],
+            "max_tokens": 8000,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": content}],
+        }
+        return url, headers, payload
+
+    url = f"{info['base_url']}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key.strip()}",
+        "Content-Type": "application/json",
+    }
+    content = []
+    for p in imgs:
+        b64, mime = _encode_image(p)
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
+        })
+    content.append({"type": "text", "text": user_text})
+
+    payload = {
+        "model": info["model"],
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content},
+        ],
+        "max_tokens": 8000,
+    }
+    if provider == "deepseek":
+        payload["thinking"] = {"type": "enabled"}
+        payload["reasoning_effort"] = "high"
+    return url, headers, payload
+
+
 def _extract_json(text: str):
     """从 AI 回复中提取 JSON"""
     text = (text or "").strip()

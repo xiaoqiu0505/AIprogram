@@ -432,6 +432,149 @@ class App(tk.Tk):
         """打开保存路径设置窗口"""
         PathDialog(self, self)
 
+    # ---------------- 组装 → AI ----------------
+    def run_assembly_ai(self, blueprint_data, bp_path, parts, parent=None):
+        """
+        把组装图纸 + 零件发给 AI，生成装配方案。
+
+        参数：
+            blueprint_data: 图纸字典
+            bp_path:        图纸文件路径
+            parts:          组装用到的零件列表
+        """
+        pid = self.get_active_provider()
+        info = cfg.get_provider_info(pid)
+        key = cfg.get_api_key(pid)
+        if not key:
+            messagebox.showwarning(
+                "需要 API Key",
+                f"当前使用的 AI 是「{info['name']}」，但还没填写 Key。\n\n"
+                f"请点右上角「🔑 填写你的 API Key」填入后重试。",
+                parent=parent)
+            return
+
+        # 收集零件路径和预览图
+        part_paths = []
+        previews = []
+        for it in parts:
+            p = it.get("part") or {}
+            if p.get("path"):
+                part_paths.append(p["path"])
+            if it.get("preview_png") and os.path.exists(it["preview_png"]):
+                previews.append(it["preview_png"])
+
+        # 弹出进度窗口
+        win = tk.Toplevel(self)
+        win.title("AI 正在组装")
+        win.configure(bg=C_BG)
+        win.transient(parent or self)
+        win.geometry("480x260")
+        win.resizable(False, False)
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+
+        tk.Label(win, text="🧩", font=("Segoe UI Emoji", 28),
+                 bg=C_BG, fg=C_TEXT).pack(pady=(18, 4))
+        tk.Label(win, text=f"{info['name']} 正在分析组装图纸…",
+                 font=FONT_MID, fg=C_TEXT, bg=C_BG).pack()
+        lbl = tk.Label(win, text="", font=FONT_SM, fg=C_SUB, bg=C_BG)
+        lbl.pack(pady=(6, 0))
+        pb = ttk.Progressbar(win, mode="indeterminate")
+        pb.pack(fill="x", padx=40, pady=(14, 6))
+        pb.start(12)
+
+        log_lbl = tk.Label(win, text="", font=("Microsoft YaHei UI", 8),
+                           fg=C_SUB, bg=C_BG, wraplength=420, justify="left")
+        log_lbl.pack(padx=20, pady=(4, 0))
+
+        # 关闭按钮（初始禁用）
+        btn_close = tk.Button(win, text="关闭", font=FONT_SM,
+                              command=lambda: (win.grab_release(), win.destroy()),
+                              bg=C_CARD, fg=C_TEXT, relief="flat", bd=0,
+                              cursor="hand2", padx=14, pady=4,
+                              highlightbackground=C_BORDER, highlightthickness=1)
+        btn_close.pack(pady=(10, 14))
+        btn_close.config(state="disabled")
+
+        def upd_log(txt):
+            try:
+                if win.winfo_exists():
+                    log_lbl.config(text=txt)
+            except Exception:
+                pass
+
+        def done_ok(spec, out_path):
+            try:
+                pb.stop()
+                lbl.config(text="✓ 装配方案已生成", fg=C_OK)
+                upd_log(f"已保存：{out_path}")
+                btn_close.config(state="normal", text="完成")
+            except Exception:
+                pass
+            # 显示结果
+            try:
+                messagebox.showinfo(
+                    "组装完成",
+                    f"AI 已给出装配方案：\n\n"
+                    f"  装配体名称：{spec.get('assembly_name', '未命名')}\n"
+                    f"  零件数量：{len(spec.get('parts', []))}\n"
+                    f"  配合关系：{len(spec.get('mates', []))} 个\n\n"
+                    f"图纸：{bp_path}\n"
+                    f"方案：{out_path}",
+                    parent=win)
+            except Exception:
+                pass
+            try:
+                os.startfile(os.path.dirname(out_path))
+            except Exception:
+                pass
+
+        def done_err(err):
+            try:
+                pb.stop()
+                lbl.config(text="✗ 失败", fg=C_ERR)
+                upd_log(str(err)[:200])
+                btn_close.config(state="normal")
+            except Exception:
+                pass
+
+        def work():
+            pythoncom_ready = False
+            try:
+                import pythoncom
+                pythoncom.CoInitialize()
+                pythoncom_ready = True
+
+                spec = api_client.analyze_assembly(
+                    key, blueprint_data,
+                    part_paths=part_paths,
+                    preview_images=previews,
+                    provider=pid)
+
+                # 保存装配方案（JSON，放模型目录）
+                out_dir = cfg.get_model_dir()
+                os.makedirs(out_dir, exist_ok=True)
+                nm = spec.get("assembly_name", "装配体")
+                nm_en = spec.get("assembly_name_en", "Assembly")
+                nm_en = "".join(c for c in nm_en if c.isalnum() or c == "_") or "Assembly"
+                out_path = os.path.join(out_dir, f"{nm}_{nm_en}_装配方案.json")
+                with open(out_path, "w", encoding="utf-8") as f:
+                    json.dump(spec, f, ensure_ascii=False, indent=2)
+
+                self.after(0, lambda: done_ok(spec, out_path))
+            except Exception as e:
+                self.after(0, lambda err=e: done_err(err))
+            finally:
+                if pythoncom_ready:
+                    try:
+                        pythoncom.CoUninitialize()
+                    except Exception:
+                        pass
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _refresh_current_label(self):
         """刷新顶栏「当前模型」显示"""
         pid = self.get_active_provider()
