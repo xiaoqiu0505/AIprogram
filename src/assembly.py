@@ -110,6 +110,11 @@ class Viewer3D(tk.Canvas):
         self._drag_start = None
         self._photos = []
 
+        # 撤销 / 重做
+        self._undo_stack = []
+        self._redo_stack = []
+        self._undo_limit = 60
+
         self.bind("<ButtonPress-3>", self._start_rot)
         self.bind("<B3-Motion>", self._do_rot)
         self.bind("<ButtonRelease-3>", self._end_rot)
@@ -127,6 +132,13 @@ class Viewer3D(tk.Canvas):
         self.bind("<Control-Up>", lambda e: self.scale_selected(1.25))
         self.bind("<Control-Down>", lambda e: self.scale_selected(1 / 1.25))
 
+        # ★ 撤销 / 重做
+        self.bind("<Control-z>", lambda e: self.undo())
+        self.bind("<Control-Z>", lambda e: self.undo())
+        self.bind("<Control-y>", lambda e: self.redo())
+        self.bind("<Control-Y>", lambda e: self.redo())
+        self.bind("<Control-Shift-Z>", lambda e: self.redo())
+
         # ★ WASD 移动选中零件
         for key, (dx, dy, dz) in {
             "w": (0, MOVE_STEP, 0),      # W = 上（Y+）
@@ -141,10 +153,132 @@ class Viewer3D(tk.Canvas):
 
         self.configure(takefocus=1)
 
+    # ==================== 撤销 / 重做 ====================
+    def _snapshot(self):
+        """把当前场景状态存成快照"""
+        return {
+            "items": [
+                {
+                    "part": it.get("part"),
+                    "tris": it.get("tris"),
+                    "name": it.get("name"),
+                    "color": it.get("color"),
+                    "bbox": it.get("bbox"),
+                    "pos": tuple(it.get("pos", (0, 0, 0))),
+                    "scale": float(it.get("scale", 1.0)),
+                }
+                for it in self.items
+            ],
+            "selected": self.selected,
+        }
+
+    def _restore(self, snap):
+        """从快照恢复场景"""
+        self.items = []
+        for s in snap.get("items", []):
+            self.items.append({
+                "part": s["part"],
+                "tris": s["tris"],
+                "name": s["name"],
+                "color": s["color"],
+                "bbox": s["bbox"],
+                "pos": s["pos"],
+                "scale": s["scale"],
+            })
+        self.selected = snap.get("selected", -1)
+        if self.selected >= len(self.items):
+            self.selected = -1
+        self.redraw()
+
+    def push_undo(self):
+        """
+        在「将要修改场景」之前调用，保存当前状态。
+        连续相同的状态不会重复入栈。
+        """
+        snap = self._snapshot()
+        if self._undo_stack:
+            last = self._undo_stack[-1]
+            if len(last["items"]) == len(snap["items"]):
+                same = True
+                for a, b in zip(last["items"], snap["items"]):
+                    if a["pos"] != b["pos"] or abs(a["scale"] - b["scale"]) > 1e-9 \
+                            or a["name"] != b["name"]:
+                        same = False
+                        break
+                if same:
+                    return      # 状态没变，不重复入栈
+        self._undo_stack.append(snap)
+        if len(self._undo_stack) > self._undo_limit:
+            self._undo_stack.pop(0)
+        # 有新操作 → 清空重做栈
+        self._redo_stack.clear()
+        self._notify()
+
+    def undo(self):
+        """撤销上一步"""
+        if not self._undo_stack:
+            return False
+
+        # 当前状态存入重做栈（避免重复）
+        cur = self._snapshot()
+        if not self._redo_stack or not self._snap_equal(cur, self._redo_stack[-1]):
+            self._redo_stack.append(cur)
+
+        # ★ 跳过与当前状态相同的历史快照（重复入栈的残留）
+        while self._undo_stack:
+            snap = self._undo_stack.pop()
+            if not self._snap_equal(snap, self._snapshot()):
+                self._restore(snap)
+                self._notify()
+                return True
+
+        # 全是相同的，恢复最后一个
+        return False
+
+    def redo(self):
+        """重做被撤销的一步"""
+        if not self._redo_stack:
+            return False
+
+        cur = self._snapshot()
+        if not self._undo_stack or not self._snap_equal(cur, self._undo_stack[-1]):
+            self._undo_stack.append(cur)
+
+        while self._redo_stack:
+            snap = self._redo_stack.pop()
+            if not self._snap_equal(snap, self._snapshot()):
+                self._restore(snap)
+                self._notify()
+                return True
+        return False
+
+    @staticmethod
+    def _snap_equal(a, b):
+        """两个快照是否等价"""
+        ai = a.get("items", [])
+        bi = b.get("items", [])
+        if len(ai) != len(bi):
+            return False
+        for x, y in zip(ai, bi):
+            if x.get("name") != y.get("name"):
+                return False
+            if tuple(x.get("pos", ())) != tuple(y.get("pos", ())):
+                return False
+            if abs(float(x.get("scale", 1.0)) - float(y.get("scale", 1.0))) > 1e-9:
+                return False
+        return True
+
+    def can_undo(self):
+        return len(self._undo_stack) > 0
+
+    def can_redo(self):
+        return len(self._redo_stack) > 0
+
     def move_selected(self, dx, dy, dz):
         """移动选中的零件（WASD 用）"""
         if not (0 <= self.selected < len(self.items)):
             return
+        self.push_undo()
         it = self.items[self.selected]
         px, py, pz = it["pos"]
         it["pos"] = (px + dx, py + dy, pz + dz)
@@ -188,6 +322,8 @@ class Viewer3D(tk.Canvas):
             self._drag_start = (e.x, e.y,
                                 self.items[idx]["pos"][0],
                                 self.items[idx]["pos"][2])
+            # 拖动前记一次（松手时如果位置没变，push_undo 会因状态相同而跳过）
+            self._drag_snapshot_taken = False
             self.config(cursor="fleur")
             self.focus_set()
             self.redraw()
@@ -198,6 +334,10 @@ class Viewer3D(tk.Canvas):
     def _on_left_drag(self, e):
         if self._drag_item is None or not self._drag_start:
             return
+        # 第一次真正移动时才记录撤销点（避免"只点不拖"也占用一步）
+        if not getattr(self, "_drag_snapshot_taken", False):
+            self.push_undo()
+            self._drag_snapshot_taken = True
         x0, y0, ox, oz = self._drag_start
         # 屏幕位移 → 世界位移（简单映射）
         k = 1.0 / max(0.01, self.cam.scale)
@@ -261,6 +401,7 @@ class Viewer3D(tk.Canvas):
         ]
         if color is None:
             color = palette[len(self.items) % len(palette)]
+        self.push_undo()
         self.items.append({
             "tris": part.get("triangles") or [],
             "pos": pos,
@@ -283,18 +424,25 @@ class Viewer3D(tk.Canvas):
         it = self.items[self.selected]
         ns = it.get("scale", 1.0) * factor
         ns = max(0.05, min(50.0, ns))
+        if abs(ns - it.get("scale", 1.0)) < 1e-12:
+            return      # 到上限了，不记录
+        self.push_undo()
         it["scale"] = ns
         self.redraw()
         self._notify()
 
     def remove_selected(self):
         if 0 <= self.selected < len(self.items):
+            self.push_undo()
             self.items.pop(self.selected)
             self.selected = -1
             self.redraw()
             self._notify()
 
     def clear_all(self):
+        if not self.items:
+            return
+        self.push_undo()
         self.items = []
         self.selected = -1
         self.redraw()
@@ -386,29 +534,85 @@ class Viewer3D(tk.Canvas):
 
             lam = abs(nx * lx + ny * ly + nz * lz)
             shade = 0.35 + 0.65 * lam
-            # 选中的零件整体提亮，方便辨认
+            # 选中的零件：明显提亮 + 偏蓝（一眼能看出）
             if sel:
-                shade = min(1.35, shade * 1.35)
-            col = "#%02x%02x%02x" % tuple(
-                max(0, min(255, int(ch * shade))) for ch in base)
+                shade = min(1.0, shade * 1.15 + 0.35)
+                # 往亮蓝方向混合，增强辨识度
+                col = "#%02x%02x%02x" % tuple(
+                    max(0, min(255, int(ch * shade)))
+                    for ch in base)
+                r = int(col[1:3], 16)
+                g = int(col[3:5], 16)
+                b = int(col[5:7], 16)
+                # 混 25% 亮蓝 (91,140,255)
+                r = int(r * 0.75 + 91 * 0.25)
+                g = int(g * 0.75 + 140 * 0.25)
+                b = int(b * 0.75 + 255 * 0.30)
+                col = "#%02x%02x%02x" % (min(255, r), min(255, g), min(255, b))
+            else:
+                col = "#%02x%02x%02x" % tuple(
+                    max(0, min(255, int(ch * shade))) for ch in base)
 
             s0 = self.cam.project(p0)
             s1 = self.cam.project(p1)
             s2 = self.cam.project(p2)
-            self.create_polygon(s0[0], s0[1], s1[0], s1[1], s2[0], s2[1],
-                               fill=col, outline=col)
+            if sel:
+                # 选中的零件：亮蓝色描边（明显）
+                self.create_polygon(
+                    s0[0], s0[1], s1[0], s1[1], s2[0], s2[1],
+                    fill=col, outline="#5B8CFF", width=1)
+            else:
+                self.create_polygon(
+                    s0[0], s0[1], s1[0], s1[1], s2[0], s2[1],
+                    fill=col, outline=col)
 
-        # 选中零件的说明
+        # ===== 选中零件：画包围框 + 顶部标签（强化视觉反馈）=====
         if 0 <= self.selected < len(self.items):
-            it = self.items[self.selected]
-            sc = it.get("scale", 1.0)
-            txt = f"已选中：{it['name']}"
-            if abs(sc - 1.0) > 1e-6:
-                txt += f"   缩放 {sc * 100:.0f}%（{sc:.3f}×）"
-            self.create_text(W / 2, 22, text=txt,
-                             font=FONT_S, fill="#4A7CFF")
+            self._draw_selection_box(W, H)
 
         self._draw_axes(W, H, t)
+
+    def _draw_selection_box(self, W, H):
+        """给选中的零件画一个亮蓝色包围框 + 标注"""
+        it = self.items[self.selected]
+        s = it.get("scale", 1.0)
+        ox, oy, oz = it["pos"]
+        pts = []
+        for (a, b, c) in it["tris"]:
+            for v in (a, b, c):
+                pts.append((v[0] * s + ox, v[1] * s + oy, v[2] * s + oz))
+        if not pts:
+            return
+
+        # 8 个角点的屏幕坐标
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        zs = [p[2] for p in pts]
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        z0, z1 = min(zs), max(zs)
+
+        corners = [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
+                   (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)]
+        proj = [self.cam.project(c) for c in corners]
+
+        # 12 条棱（虚线亮蓝）
+        edges = [(0, 1), (1, 2), (2, 3), (3, 0),
+                 (4, 5), (5, 6), (6, 7), (7, 4),
+                 (0, 4), (1, 5), (2, 6), (3, 7)]
+        for (i, j) in edges:
+            p, q = proj[i], proj[j]
+            self.create_line(p[0], p[1], q[0], q[1],
+                             fill="#5B8CFF", width=2, dash=(6, 4))
+
+        # 顶部标签
+        sc = it.get("scale", 1.0)
+        txt = f"★ {it['name']}"
+        if abs(sc - 1.0) > 1e-6:
+            txt += f"　缩放 {sc * 100:.0f}%（{sc:.3f}×）"
+        self.create_text(W / 2, 22, text=txt,
+                         font=("Microsoft YaHei UI", 10, "bold"),
+                         fill="#5B8CFF")
 
     def _draw_grid(self, W, H, t):
         """淡网格背景"""
@@ -468,7 +672,28 @@ class AssemblyWindow(tk.Toplevel):
         self.minsize(900, 640)
 
         self._build()
+
+        # ★ 整个窗口都能响应 Ctrl+Z / Ctrl+Y（不一定非要点到 3D 画布）
+        for seq in ("<Control-z>", "<Control-Z>"):
+            self.bind_all(seq, lambda e: self._hotkey_undo())
+        for seq in ("<Control-y>", "<Control-Y>", "<Control-Shift-Z>"):
+            self.bind_all(seq, lambda e: self._hotkey_redo())
+
         self.after(100, self._center)
+
+    def _hotkey_undo(self):
+        try:
+            self.do_undo()
+        except Exception:
+            pass
+        return "break"
+
+    def _hotkey_redo(self):
+        try:
+            self.do_redo()
+        except Exception:
+            pass
+        return "break"
 
     def _build(self):
         t = _T()
@@ -513,6 +738,21 @@ class AssemblyWindow(tk.Toplevel):
             relief="flat", bd=0, cursor="hand2", padx=9, pady=1,
             highlightbackground=t["BORDER"], highlightthickness=1)
         self.btn_scale_up.pack(side="left", padx=(2, 10))
+
+        # ★ 撤销 / 重做
+        self.btn_undo = tk.Button(
+            tr, text="↶ 撤销", font=FONT_S, command=self.do_undo,
+            bg=t["CARD"], fg=t["TEXT"], activebackground=t["HOVER"],
+            relief="flat", bd=0, cursor="hand2", padx=10, pady=5,
+            highlightbackground=t["BORDER"], highlightthickness=1)
+        self.btn_undo.pack(side="left", padx=(0, 4))
+
+        self.btn_redo = tk.Button(
+            tr, text="↷ 重做", font=FONT_S, command=self.do_redo,
+            bg=t["CARD"], fg=t["TEXT"], activebackground=t["HOVER"],
+            relief="flat", bd=0, cursor="hand2", padx=10, pady=5,
+            highlightbackground=t["BORDER"], highlightthickness=1)
+        self.btn_redo.pack(side="left", padx=(0, 10))
 
         self.btn_clear = tk.Button(
             tr, text="清空组装区", font=FONT_S, command=self.clear_scene,
@@ -867,7 +1107,7 @@ class AssemblyWindow(tk.Toplevel):
 
     # ---------- 场景变化 ----------
     def _on_scene_change(self):
-        """场景内容变化时更新缩放显示"""
+        """场景内容变化时更新缩放显示 + 撤销按钮状态"""
         try:
             sel = self.viewer.selected
             if 0 <= sel < len(self.viewer.items):
@@ -877,6 +1117,36 @@ class AssemblyWindow(tk.Toplevel):
                 self.lbl_scale.config(text="—")
         except Exception:
             pass
+        self._refresh_undo_buttons()
+
+    def _refresh_undo_buttons(self):
+        """根据撤销栈更新按钮可用状态"""
+        try:
+            t = _T()
+            can_u = self.viewer.can_undo()
+            can_r = self.viewer.can_redo()
+            self.btn_undo.config(
+                state="normal" if can_u else "disabled",
+                fg=t["TEXT"] if can_u else t["PLACE"])
+            self.btn_redo.config(
+                state="normal" if can_r else "disabled",
+                fg=t["TEXT"] if can_r else t["PLACE"])
+        except Exception:
+            pass
+
+    def do_undo(self):
+        """撤销（Ctrl+Z）"""
+        if self.viewer.undo():
+            self.viewer.focus_set()
+            self._refresh_tray()
+            self._on_scene_change()
+
+    def do_redo(self):
+        """重做（Ctrl+Y）"""
+        if self.viewer.redo():
+            self.viewer.focus_set()
+            self._refresh_tray()
+            self._on_scene_change()
 
     # ---------- 完成组装 ----------
     def finish_assembly(self):
@@ -943,6 +1213,19 @@ class AssemblyWindow(tk.Toplevel):
             return
         self.viewer.clear_all()
         self.placed = []
+
+    def destroy(self):
+        """关闭时解绑全局快捷键，避免残留"""
+        try:
+            for seq in ("<Control-z>", "<Control-Z>", "<Control-y>",
+                        "<Control-Y>", "<Control-Shift-Z>"):
+                self.unbind_all(seq)
+        except Exception:
+            pass
+        try:
+            super().destroy()
+        except Exception:
+            pass
 
     def _center(self):
         try:
