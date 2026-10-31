@@ -55,6 +55,14 @@ def build():
         "--hidden-import", "PIL",
         "--hidden-import", "PIL.Image",
         "--hidden-import", "PIL.ImageTk",
+        # ★ 项目内模块：都是运行时动态 import 的，PyInstaller 静态分析会漏掉
+        "--hidden-import", "assembly",
+        "--hidden-import", "part_reader",
+        "--hidden-import", "sketchpad",
+        "--hidden-import", "filedrop",
+        "--hidden-import", "sw_builder",
+        "--hidden-import", "api_client",
+        "--hidden-import", "config",
         "--collect-submodules", "win32com",
         MAIN,
     ]
