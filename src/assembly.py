@@ -993,20 +993,35 @@ class AssemblyWindow(tk.Toplevel):
             card._part_idx = i
             self.tray_cards.append(card)
 
-            # ★ 点击 = 选中/放入
-            def on_click(e, idx=i):
-                self.select_part_from_tray(idx)
-                return "break"
+            # ★ 统一处理：按下记位置 → 松开时判断是「点击」还是「拖动」
+            #
+            # 注意：<Button-1> 和 <ButtonPress-1> 在 Tkinter 里是同一个事件，
+            # 分开 bind（add=None）会互相覆盖 —— 这正是之前"点不动"的原因。
+            # 所以只能绑一次 <ButtonPress-1> + 一次 <ButtonRelease-1>。
+            def on_press(e, idx=i):
+                self._tray_press = (e.x_root, e.y_root, idx)
 
-            for w in [card, nm_lbl, st_lbl] + list(card.winfo_children()):
-                w.bind("<Button-1>", on_click)
+            def on_release(e, idx=i):
+                press = getattr(self, "_tray_press", None)
+                self._tray_press = None
+                if not press:
+                    return
+                px, py, pidx = press
+                if pidx != idx:
+                    return
+                # 移动超过 8 像素算拖动，否则算点击
+                if abs(e.x_root - px) <= 8 and abs(e.y_root - py) <= 8:
+                    self.select_part_from_tray(idx)
 
-            # 也支持拖拽放置
-            for w in [card, nm_lbl, st_lbl] + list(card.winfo_children()):
-                w.bind("<ButtonPress-1>",
-                       lambda e, idx=i: self._drag_start(e, idx))
+            targets = [card, nm_lbl, st_lbl] + list(card.winfo_children())
+            for w in targets:
+                w.bind("<ButtonPress-1>", on_press)
+                w.bind("<ButtonRelease-1>", on_release)
                 w.bind("<B1-Motion>", self._drag_move)
-                w.bind("<ButtonRelease-1>", self._drag_end)
+                w.bind("<Enter>",
+                       lambda e, c=card: c.config(cursor="hand2"))
+                w.bind("<Leave>",
+                       lambda e, c=card: c.config(cursor=""))
 
         self._refresh_tray()
 
@@ -1015,23 +1030,55 @@ class AssemblyWindow(tk.Toplevel):
         t = _T()
         viewer_items = self.viewer.items
 
+        # 判断当前是深色还是浅色（按亮度算，不能用字符串比较）
+        try:
+            r = int(t["BG"][1:3], 16)
+            g = int(t["BG"][3:5], 16)
+            b = int(t["BG"][5:7], 16)
+            is_dark = (r * 0.299 + g * 0.587 + b * 0.114) < 128
+        except Exception:
+            is_dark = False
+
+        hi_bg = "#2C3A55" if is_dark else "#E8EEFF"
+        hi_fg = "#8FB4FF" if is_dark else "#3A63D4"
+
         # 找出场景里每个零件实例对应的托盘索引
         for i, card in enumerate(getattr(self, "tray_cards", [])):
             in_scene = [j for j, it in enumerate(viewer_items)
                         if it.get("part") is self.parts[i].get("part")]
             selected = (self.viewer.selected in in_scene) if in_scene else False
 
-            # 高亮：选中的卡片蓝框加粗
+            # 高亮：选中的卡片 —— 亮蓝粗边框 + 蓝底 + 加粗名字
             try:
                 if selected:
                     card.config(highlightbackground=t["PRIMARY"],
                                 highlightthickness=3,
-                                bg="#E8EEFF" if t["BG"] > "#808080"
-                                else "#2C3A55")
+                                bg=hi_bg)
+                    card._name_lbl.config(fg=hi_fg,
+                                          font=("Microsoft YaHei UI", 8, "bold"))
+                elif in_scene:
+                    card.config(highlightbackground=t["OK"],
+                                highlightthickness=2,
+                                bg=t["PANEL"])
+                    card._name_lbl.config(fg=t["TEXT"],
+                                          font=("Microsoft YaHei UI", 8))
                 else:
                     card.config(highlightbackground=t["BORDER"],
                                 highlightthickness=1,
                                 bg=t["PANEL"])
+                    card._name_lbl.config(fg=t["SUB"],
+                                          font=("Microsoft YaHei UI", 8))
+                # 子控件背景跟随卡片
+                for ch in card.winfo_children():
+                    try:
+                        if isinstance(ch, tk.Label) and not ch.cget("image"):
+                            ch.config(bg=hi_bg if selected else t["PANEL"])
+                    except Exception:
+                        pass
+                try:
+                    card._st_lbl.config(bg=hi_bg if selected else t["PANEL"])
+                except Exception:
+                    pass
             except Exception:
                 pass
 
@@ -1044,10 +1091,10 @@ class AssemblyWindow(tk.Toplevel):
                 txt = "★ 已选中"
                 if abs(sc - 1.0) > 1e-6:
                     txt += f"　{sc * 100:.0f}%"
-                st.config(text=txt, fg=t["PRIMARY"])
+                st.config(text=txt, fg=hi_fg)
             else:
                 sc = viewer_items[in_scene[0]].get("scale", 1.0)
-                txt = "已放入"
+                txt = "✓ 已放入"
                 if abs(sc - 1.0) > 1e-6:
                     txt += f"　{sc * 100:.0f}%"
                 st.config(text=txt, fg=t["OK"])
