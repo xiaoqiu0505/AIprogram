@@ -24,10 +24,37 @@ import threading
 import config as cfg
 import part_reader
 
-# 配色（从 app 模块动态取，这里用函数读取最新值）
+# 配色（从主模块动态取，这里用函数读取最新值）
+#
+# ★ 关键：不能写 `import app`！
+#   打包成 exe 后，app.py 是以 __main__ 的名字运行的，
+#   再 `import app` 会**重新加载一份 app.py**（变成第二个模块实例），
+#   那份的 C_BG 永远是最初的浅色，导致界面全白。
+#   正确做法：从 sys.modules 里找当前真正在运行的那个主模块。
+import sys as _sys
+
+
+def _get_app_module():
+    """取当前正在运行的主模块（开发时叫 app，打包后叫 __main__）"""
+    for name in ("app", "__main__"):
+        m = _sys.modules.get(name)
+        if m is not None and hasattr(m, "C_BG"):
+            return m
+    return None
+
+
 def _T():
     """取当前主题的配色"""
-    import app as A
+    A = _get_app_module()
+    if A is None:
+        # 兜底：浅色
+        return {
+            "BG": "#F7F8FA", "CARD": "#FFFFFF", "TEXT": "#1F2430",
+            "SUB": "#6B7280", "BORDER": "#E3E6EC", "INPUT": "#FBFCFD",
+            "PRIMARY": "#4A7CFF", "PRIMARY_D": "#3A63D4",
+            "OK": "#22A06B", "ERR": "#E5484D", "PANEL": "#F7F9FC",
+            "HOVER": "#F0F2F6", "PLACE": "#A0A4AD", "WARN": "#E8912D",
+        }
     return {
         "BG": A.C_BG, "CARD": A.C_CARD, "TEXT": A.C_TEXT,
         "SUB": A.C_SUB, "BORDER": A.C_BORDER, "INPUT": A.C_INPUT_BG,
