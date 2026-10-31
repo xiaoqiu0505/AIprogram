@@ -45,6 +45,10 @@ LIGHT = {
     "C_WARN":      "#E8A33D",
     "C_HOVER":     "#EEF3FF",
     "C_PANEL":     "#F7F9FC",
+    "C_DISABLED":  "#F0F1F4",
+    "C_ON_PRIMARY": "#FFFFFF",
+    "C_TAG_BG":    "#EEF3FF",
+    "C_PLACEHOLDER": "#A0A4AD",
 }
 
 # 深色
@@ -62,6 +66,10 @@ DARK = {
     "C_WARN":      "#F0B44C",
     "C_HOVER":     "#2C313A",
     "C_PANEL":     "#1F2229",
+    "C_DISABLED":  "#2A2E36",
+    "C_ON_PRIMARY": "#FFFFFF",
+    "C_TAG_BG":    "#2C3A55",
+    "C_PLACEHOLDER": "#6E7480",
 }
 
 # 当前主题（模块级变量，供各控件读取）
@@ -78,12 +86,16 @@ C_ERR       = LIGHT["C_ERR"]
 C_WARN      = LIGHT["C_WARN"]
 C_HOVER     = LIGHT["C_HOVER"]
 C_PANEL     = LIGHT["C_PANEL"]
+C_DISABLED  = LIGHT["C_DISABLED"]
+C_TAG_BG    = LIGHT["C_TAG_BG"]
+C_PLACEHOLDER = LIGHT["C_PLACEHOLDER"]
 
 
 def apply_theme(name):
     """切换模块级配色变量，返回主题字典"""
     global C_BG, C_CARD, C_PRIMARY, C_PRIMARY_D, C_TEXT, C_SUB
     global C_BORDER, C_INPUT_BG, C_OK, C_ERR, C_WARN, C_HOVER, C_PANEL
+    global C_DISABLED, C_TAG_BG, C_PLACEHOLDER
 
     pal = DARK if name == "dark" else LIGHT
     C_BG        = pal["C_BG"]
@@ -99,6 +111,9 @@ def apply_theme(name):
     C_WARN      = pal["C_WARN"]
     C_HOVER     = pal["C_HOVER"]
     C_PANEL     = pal["C_PANEL"]
+    C_DISABLED  = pal["C_DISABLED"]
+    C_TAG_BG    = pal["C_TAG_BG"]
+    C_PLACEHOLDER = pal["C_PLACEHOLDER"]
     return pal
 
 FONT_MAIN = ("Microsoft YaHei UI", 10)
@@ -378,6 +393,11 @@ class App(tk.Tk):
         self.pages["home"] = HomePage(self.container, self)
         self.pages["choice"] = ChoicePage(self.container, self)
         self.pages["design"] = DesignPage(self.container, self)
+        try:
+            from assembly import AssemblyPage
+            self.pages["assembly"] = AssemblyPage(self.container, self)
+        except Exception as e:
+            print(f"[组装页] 加载失败: {e}")
 
     def show_page(self, name):
         for p in self.pages.values():
@@ -613,7 +633,7 @@ class KeyDialog(tk.Toplevel):
             self._update_status(pid)
 
             hint = tk.Label(inner, text="", font=("Microsoft YaHei UI", 7),
-                            fg="#A0A4AD", bg=C_CARD)
+                            fg=C_PLACEHOLDER, bg=C_CARD)
 
     def _update_status(self, pid):
         lbl = self.status_lbls[pid]
@@ -802,7 +822,7 @@ class PathDialog(tk.Toplevel):
         reset_btn = tk.Button(
             fin, text="恢复默认", font=("Microsoft YaHei UI", 9),
             command=self.reset_default,
-            bg="#FFFFFF", fg=C_SUB,
+            bg=C_CARD, fg=C_SUB,
             activebackground=C_HOVER, relief="flat", bd=0,
             cursor="hand2", padx=14, pady=5,
             highlightbackground=C_BORDER, highlightthickness=1)
@@ -1069,9 +1089,10 @@ class ChoicePage(tk.Frame):
         self._mk_option(
             row, "🧩",
             "有多个现成的部件模型，我要组装！",
-            "把多个零件文件装配成一个完整产品，自动配合约束",
-            enabled=False, cmd=None).pack(side="left", fill="both",
-                                          expand=True, padx=(10, 0))
+            "上传多个 SolidWorks / STEP / STL 文件，在 3D 界面里拖拽摆放",
+            enabled=True, cmd=self.choose_assembly,
+            badge="可用").pack(side="left", fill="both", expand=True,
+                               padx=(10, 0))
 
         # ---- 底部长条：手把手教你 CAD ----
         self._mk_wide_option(
@@ -1082,7 +1103,7 @@ class ChoicePage(tk.Frame):
 
     def _mk_option(self, parent, icon, title, desc, enabled=True, cmd=None,
                    badge=None):
-        bg = C_CARD if enabled else "#F0F1F4"
+        bg = C_CARD if enabled else C_DISABLED
         fg_title = C_TEXT if enabled else C_SUB
         card = tk.Frame(parent, bg=bg, highlightbackground=C_BORDER,
                         highlightthickness=1, cursor="hand2" if enabled else "")
@@ -1121,7 +1142,7 @@ class ChoicePage(tk.Frame):
 
     def _mk_wide_option(self, parent, icon, title, desc):
         """横向长条卡片（整行宽度）"""
-        bg = "#F0F1F4"
+        bg = C_DISABLED
         card = tk.Frame(parent, bg=bg, highlightbackground=C_BORDER,
                         highlightthickness=1)
         inner = tk.Frame(card, bg=bg)
@@ -1144,6 +1165,15 @@ class ChoicePage(tk.Frame):
 
     def choose_cad(self):
         self.app.check_key_and_go()
+
+    def choose_assembly(self):
+        """进入组装页（不需要 API Key）"""
+        if "assembly" not in self.app.pages:
+            messagebox.showerror(
+                "功能不可用",
+                "组装模块加载失败，请检查 src/assembly.py 是否完整。")
+            return
+        self.app.show_page("assembly")
 
 
 # ==================== 范例窗口 ====================
@@ -1287,7 +1317,7 @@ class ExampleDialog(tk.Toplevel):
 
         cls_btn = tk.Button(fin, text="关闭", font=("Microsoft YaHei UI", 9),
                             command=self.close,
-                            bg="#FFFFFF", fg=C_TEXT,
+                            bg=C_CARD, fg=C_TEXT,
                             activebackground=C_HOVER, relief="flat", bd=0,
                             cursor="hand2", padx=18, pady=5,
                             highlightbackground=C_BORDER, highlightthickness=1)
@@ -1315,7 +1345,7 @@ class ExampleDialog(tk.Toplevel):
 
         # 分类标签
         tag = tk.Label(r1, text=ex["tag"], font=("Microsoft YaHei UI", 7),
-                       fg=C_PRIMARY, bg="#EEF3FF", padx=7, pady=1)
+                       fg=C_PRIMARY, bg=C_TAG_BG, padx=7, pady=1)
         tag.pack(side="left", padx=(8, 0))
 
         # 使用按钮
@@ -1411,7 +1441,7 @@ class DesignPage(tk.Frame):
         self.btn_sketch = tk.Button(
             sketch_row,
             text="✏  手绘一个3D草图，尽情绘制吧",
-            font=FONT_SM, bg="#FFFFFF", fg=C_PRIMARY,
+            font=FONT_SM, bg=C_CARD, fg=C_PRIMARY,
             activebackground=C_HOVER, activeforeground=C_PRIMARY,
             relief="flat", bd=0, cursor="hand2", padx=14, pady=7,
             highlightbackground=C_BORDER, highlightthickness=1,
@@ -1438,14 +1468,14 @@ class DesignPage(tk.Frame):
 
         btn_ex = tk.Button(desc_head, text="📖 查看范例", font=FONT_SM,
                            command=self.open_examples,
-                           bg="#FFFFFF", fg=C_PRIMARY,
+                           bg=C_CARD, fg=C_PRIMARY,
                            activebackground=C_HOVER, activeforeground=C_PRIMARY,
                            relief="flat", bd=0, cursor="hand2",
                            padx=12, pady=4,
                            highlightbackground=C_BORDER, highlightthickness=1)
         btn_ex.pack(side="right")
         btn_ex.bind("<Enter>", lambda e: btn_ex.config(bg=C_HOVER))
-        btn_ex.bind("<Leave>", lambda e: btn_ex.config(bg="#FFFFFF"))
+        btn_ex.bind("<Leave>", lambda e: btn_ex.config(bg=C_CARD))
 
         # 文本框（固定高度，不会被按钮挤压）
         txt_wrap = tk.Frame(li, bg=C_INPUT_BG, highlightbackground=C_BORDER,
@@ -1461,7 +1491,7 @@ class DesignPage(tk.Frame):
         self.desc_placeholder = "在这里描述你想要的零件（也可以先上传图片，或点右上角「📖 查看范例」）"
         self._desc_empty = True
         self.txt_desc.insert("1.0", self.desc_placeholder)
-        self.txt_desc.config(fg="#A0A4AD")
+        self.txt_desc.config(fg=C_PLACEHOLDER)
         self.txt_desc.bind("<FocusIn>", self._desc_on_focus)
         self.txt_desc.bind("<FocusOut>", self._desc_on_blur)
         # 实时刷新「预备输入」清单
@@ -1512,33 +1542,33 @@ class DesignPage(tk.Frame):
         self.progress.pack(fill="x", pady=(0, 10))
 
         # ============ 预备输入清单 ============
-        self.input_frame = tk.Frame(ri, bg="#F7F9FC",
+        self.input_frame = tk.Frame(ri, bg=C_PANEL,
                                     highlightbackground=C_BORDER,
                                     highlightthickness=1)
         self.input_frame.pack(fill="x", pady=(0, 10))
 
-        self.input_inner = tk.Frame(self.input_frame, bg="#F7F9FC")
+        self.input_inner = tk.Frame(self.input_frame, bg=C_PANEL)
         self.input_inner.pack(fill="x", padx=10, pady=8)
 
-        head = tk.Frame(self.input_inner, bg="#F7F9FC")
+        head = tk.Frame(self.input_inner, bg=C_PANEL)
         head.pack(fill="x")
         tk.Label(head, text="📋 预备输入", font=("Microsoft YaHei UI", 9, "bold"),
-                 fg=C_TEXT, bg="#F7F9FC").pack(side="left")
+                 fg=C_TEXT, bg=C_PANEL).pack(side="left")
         self.lbl_input_count = tk.Label(
             head, text="无", font=("Microsoft YaHei UI", 8),
-            fg=C_SUB, bg="#F7F9FC")
+            fg=C_SUB, bg=C_PANEL)
         self.lbl_input_count.pack(side="right")
 
         # 清单内容容器
-        self.input_list = tk.Frame(self.input_inner, bg="#F7F9FC")
+        self.input_list = tk.Frame(self.input_inner, bg=C_PANEL)
         self.input_list.pack(fill="x", pady=(6, 0))
 
         # 导出 3D 打印按钮（默认禁用）
         self.btn_print = tk.Button(
             ri, text="🖨  导出3D打印文件", font=FONT_MAIN,
             command=self.export_print_file,
-            bg="#EDEEF2", fg="#A0A4AD",
-            activebackground="#EDEEF2", activeforeground="#A0A4AD",
+            bg=C_DISABLED, fg=C_SUB,
+            activebackground=C_DISABLED, activeforeground=C_SUB,
             relief="flat", bd=0, cursor="", padx=16, pady=9,
             state="disabled")
         self.btn_print.pack(fill="x", pady=(0, 12))
@@ -1700,8 +1730,8 @@ class DesignPage(tk.Frame):
         # --- 汇总 ---
         if rows == 0:
             tk.Label(self.input_list, text="还没有输入任何内容",
-                     font=("Microsoft YaHei UI", 8), fg="#A0A4AD",
-                     bg="#F7F9FC", anchor="w").pack(fill="x")
+                     font=("Microsoft YaHei UI", 8), fg=C_PLACEHOLDER,
+                     bg=C_PANEL, anchor="w").pack(fill="x")
             self.lbl_input_count.config(text="无", fg=C_SUB)
         else:
             n_img = len(paths)
@@ -1724,16 +1754,16 @@ class DesignPage(tk.Frame):
             if mode:
                 tk.Label(self.input_list, text="▸ " + mode,
                          font=("Microsoft YaHei UI", 8), fg=C_PRIMARY,
-                         bg="#F7F9FC", anchor="w").pack(fill="x", pady=(4, 0))
+                         bg=C_PANEL, anchor="w").pack(fill="x", pady=(4, 0))
 
     def _input_row(self, parent, icon, text, color):
         """清单里的一行"""
-        row = tk.Frame(parent, bg="#F7F9FC")
+        row = tk.Frame(parent, bg=C_PANEL)
         row.pack(fill="x", pady=1)
         tk.Label(row, text=icon, font=("Segoe UI Emoji", 8),
-                 fg=color, bg="#F7F9FC").pack(side="left")
+                 fg=color, bg=C_PANEL).pack(side="left")
         tk.Label(row, text=text, font=("Microsoft YaHei UI", 8),
-                 fg=color, bg="#F7F9FC", anchor="w").pack(side="left", padx=(4, 0))
+                 fg=color, bg=C_PANEL, anchor="w").pack(side="left", padx=(4, 0))
         return row
 
     def _on_files_dropped(self, paths):
@@ -1911,7 +1941,7 @@ class DesignPage(tk.Frame):
             self._desc_empty = True
             self.txt_desc.delete("1.0", "end")
             self.txt_desc.insert("1.0", self.desc_placeholder)
-            self.txt_desc.config(fg="#A0A4AD")
+            self.txt_desc.config(fg=C_PLACEHOLDER)
         # 文字变化也要刷新清单
         self._refresh_input_list()
 
@@ -2114,7 +2144,7 @@ class DesignPage(tk.Frame):
         try:
             self.txt_desc.delete("1.0", "end")
             self.txt_desc.insert("1.0", self.desc_placeholder)
-            self.txt_desc.config(fg="#A0A4AD")
+            self.txt_desc.config(fg=C_PLACEHOLDER)
             self._desc_empty = True
         except Exception:
             pass
@@ -2134,8 +2164,8 @@ class DesignPage(tk.Frame):
                 cursor="hand2")
         else:
             self.btn_print.config(
-                state="disabled", bg="#EDEEF2", fg="#A0A4AD",
-                activebackground="#EDEEF2", activeforeground="#A0A4AD",
+                state="disabled", bg=C_DISABLED, fg=C_SUB,
+                activebackground=C_DISABLED, activeforeground=C_SUB,
                 cursor="")
 
     def export_print_file(self):
