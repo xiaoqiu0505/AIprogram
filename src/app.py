@@ -9,6 +9,7 @@ app.py — SolidWorks 零件生成器 主程序
 """
 import os
 import sys
+import json
 import time
 import threading
 import traceback
