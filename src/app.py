@@ -300,6 +300,15 @@ class App(tk.Tk):
         except Exception:
             saved_inputs = None
 
+        # ★ 记住组装页已上传的零件（同样不能丢）
+        saved_assembly = None
+        try:
+            ap = self.pages.get("assembly")
+            if ap is not None:
+                saved_assembly = list(getattr(ap, "files", []) or [])
+        except Exception:
+            saved_assembly = None
+
         self._rebuilding = True
         try:
             # 销毁旧控件
@@ -330,6 +339,16 @@ class App(tk.Tk):
                         dp._refresh_images()
                         if saved_inputs["desc"]:
                             dp.set_desc(saved_inputs["desc"])
+                except Exception:
+                    pass
+
+            # ★ 恢复组装页已上传的零件
+            if saved_assembly:
+                try:
+                    ap = self.pages.get("assembly")
+                    if ap is not None:
+                        ap.files = saved_assembly
+                        ap._refresh_cards()
                 except Exception:
                     pass
 
