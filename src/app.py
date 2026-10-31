@@ -9,6 +9,7 @@ app.py — SolidWorks 零件生成器 主程序
 """
 import os
 import sys
+import time
 import threading
 import traceback
 import tkinter as tk
@@ -28,6 +29,55 @@ else:
 
 import config as cfg
 import api_client
+
+
+# ==================== 错误日志 ====================
+def _log_path():
+    """日志文件路径（%APPDATA%\\SolidWorksPartGen\\error.log）"""
+    try:
+        return os.path.join(cfg.CONFIG_DIR, "error.log")
+    except Exception:
+        return os.path.join(os.path.expanduser("~"), "swpg_error.log")
+
+
+def _log_error(title, exc=None, tb=""):
+    """把错误写进日志文件（exe 是 --windowed，没有控制台，必须落盘）"""
+    try:
+        os.makedirs(os.path.dirname(_log_path()), exist_ok=True)
+        with open(_log_path(), "a", encoding="utf-8") as f:
+            f.write("\n" + "=" * 60 + "\n")
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {title}\n")
+            if exc is not None:
+                f.write(f"异常: {type(exc).__name__}: {exc}\n")
+            if tb:
+                f.write(tb + "\n")
+    except Exception:
+        pass
+
+
+def _setup_excepthook():
+    """全局异常捕获：未处理异常写入日志"""
+    def hook(exc_type, exc_value, exc_tb):
+        import traceback
+        tb = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        _log_error("未捕获异常", exc_value, tb)
+        try:
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+        except Exception:
+            pass
+
+    sys.excepthook = hook
+
+    def thook(args):
+        import traceback
+        tb = "".join(traceback.format_exception(
+            args.exc_type, args.exc_value, args.exc_traceback))
+        _log_error("线程异常", args.exc_value, tb)
+
+    try:
+        threading.excepthook = thook
+    except Exception:
+        pass
 
 # ==================== 配色 ====================
 # 浅色（默认）
@@ -255,6 +305,11 @@ class App(tk.Tk):
             self._show_busy_hint()
             return
 
+        try:
+            _log_error(f"[主题] 切换到 {name}（正常记录）")
+        except Exception:
+            pass
+
         self.current_theme = name
 
         # 保存到配置
@@ -269,7 +324,17 @@ class App(tk.Tk):
         apply_theme(name)
 
         # 重建全部界面（配色是模块级变量，控件创建时读取）
-        self._rebuild_ui()
+        try:
+            self._rebuild_ui()
+        except Exception as e:
+            import traceback
+            _log_error("重建界面失败", e, traceback.format_exc())
+            try:
+                messagebox.showerror(
+                    "切换主题失败",
+                    f"{e}\n\n详细信息已写入日志：\n{_log_path()}")
+            except Exception:
+                pass
 
     def _rebuild_ui(self):
         """按当前主题重建整个界面"""
@@ -416,6 +481,8 @@ class App(tk.Tk):
             from assembly import AssemblyPage
             self.pages["assembly"] = AssemblyPage(self.container, self)
         except Exception as e:
+            import traceback
+            _log_error("组装页加载失败", e, traceback.format_exc())
             print(f"[组装页] 加载失败: {e}")
 
     def show_page(self, name):
@@ -2307,8 +2374,21 @@ class DesignPage(tk.Frame):
 
 
 def main():
-    app = App()
-    app.mainloop()
+    _setup_excepthook()
+    try:
+        app = App()
+        app.mainloop()
+    except Exception as e:
+        import traceback
+        _log_error("启动失败", e, traceback.format_exc())
+        try:
+            messagebox.showerror(
+                "启动失败",
+                f"程序启动时出错：\n{e}\n\n"
+                f"详细信息已写入：\n{_log_path()}")
+        except Exception:
+            pass
+        raise
 
 
 if __name__ == "__main__":
