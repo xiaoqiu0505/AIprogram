@@ -129,21 +129,25 @@ def read_via_solidworks(path, log=None):
     """
     用 SolidWorks 打开文件并提取几何。
 
+    ★ 关键：必须用「静态绑定」（makepy），动态 Dispatch 会导致
+      SaveAs3 / GetBodies2 等调用静默失败，拿不到三角面。
+      这里复用 sw_builder 里已验证的 SolidWorksBuilder.connect()。
+
     返回: (bbox, volume_mm3, faces, tris) 或抛异常
     """
-    import pythoncom
-    import win32com.client
+    import time
 
-    # 本函数应在已 CoInitialize 的线程里调用
-
-    sw = None
+    # ---- 用 SolidWorksBuilder 建立静态绑定连接 ----
     try:
-        sw = win32com.client.GetActiveObject("SldWorks.Application")
-    except Exception:
-        try:
-            sw = win32com.client.Dispatch("SldWorks.Application")
-        except Exception as e:
-            raise RuntimeError(f"无法连接 SolidWorks：{e}")
+        from sw_builder import SolidWorksBuilder
+    except Exception as e:
+        raise RuntimeError(f"无法导入建模模块：{e}")
+
+    b = SolidWorksBuilder(log_func=log or (lambda m: None))
+    b.connect()          # 内部做了 CoInitialize + makepy 静态绑定
+    sw = b.sw
+    if sw is None:
+        raise RuntimeError("无法连接 SolidWorks")
 
     ext = os.path.splitext(path)[1].lower()
 
@@ -159,18 +163,84 @@ def read_via_solidworks(path, log=None):
     }
     dtype = type_map.get(ext, 1)
 
-    doc = None
-    try:
-        doc = sw.OpenDoc6(path, dtype, 1, "", 0, 0)
-    except Exception as e:
-        # 老接口兜底
-        try:
-            doc = sw.OpenDoc(path, dtype)
-        except Exception:
-            raise RuntimeError(f"打开文件失败：{e}")
+    # ---- 打开文件 ----
+    # 注意：静态绑定下 OpenDoc6 返回的是 tuple (doc, errors, warnings)，
+    # 不能直接当 doc 用。打开后统一从 ActiveDoc 取当前文档。
+    base_name = os.path.basename(path)
 
-    if not doc:
+    # 先看看这个文件是不是已经打开着
+    def _find_open_doc_by_name():
+        try:
+            docs = sw.GetDocuments()
+            if not docs:
+                return None
+            for d in docs:
+                try:
+                    t = d.GetTitle()
+                    if t and t.lower() == base_name.lower():
+                        return d
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
+
+    already = _find_open_doc_by_name()
+
+    opened = False
+    try:
+        r = sw.OpenDoc6(path, dtype, 1, "", 0, 0)
+        if isinstance(r, tuple):
+            opened = bool(r[0])
+        else:
+            opened = bool(r)
+    except Exception as e1:
+        try:
+            r = sw.OpenDoc(path, dtype)
+            opened = bool(r)
+        except Exception:
+            raise RuntimeError(f"打开文件失败：{e1}")
+
+    if not opened:
         raise RuntimeError("SolidWorks 无法打开这个文件（格式不支持或版本过高）")
+
+    time.sleep(0.3)
+
+    # ---- 从 ActiveDoc 取文档，并校验是不是我们打开的那个 ----
+    try:
+        active = sw.ActiveDoc
+        if not active:
+            raise RuntimeError("打开后没有活动文档")
+        doc = b.mod.IModelDoc2(active._oleobj_)
+        got_title = ""
+        try:
+            got_title = doc.GetTitle() or ""
+        except Exception:
+            pass
+        # 名字对不上（说明 ActiveDoc 是别的文档），去找同名文档
+        if got_title and got_title.lower() != base_name.lower():
+            cand = _find_open_doc_by_name()
+            if cand is not None:
+                # 激活它
+                try:
+                    sw.ActivateDoc3(base_name, True, 0, 0)
+                    time.sleep(0.2)
+                    doc = b.mod.IModelDoc2(sw.ActiveDoc._oleobj_)
+                except Exception:
+                    try:
+                        sw.ActivateDoc2(base_name, True, 0)
+                        time.sleep(0.2)
+                        doc = b.mod.IModelDoc2(sw.ActiveDoc._oleobj_)
+                    except Exception:
+                        pass
+    except Exception as e:
+        raise RuntimeError(f"获取文档失败：{e}")
+
+    title = ""
+    try:
+        title = doc.GetTitle()
+    except Exception:
+        title = os.path.basename(path)
 
     try:
         bbox = None
@@ -178,33 +248,28 @@ def read_via_solidworks(path, log=None):
         nface = 0
         tris = []
 
-        # 如果是装配体，先尝试取包围盒
+        # ---- 体积 ----
         try:
             mp = doc.Extension.CreateMassProperty()
             vol = float(mp.Volume) * 1e9      # m³ → mm³
         except Exception:
             vol = 0.0
 
-        # 取实体包围盒
+        # ---- 包围盒 + 面数 ----
         try:
-            part = doc
-            bodies = None
-            try:
-                bodies = part.GetBodies2(0, True)
-            except Exception:
-                # 装配体没有 GetBodies2，跳过
-                bodies = None
-
+            part = b.mod.IPartDoc(doc._oleobj_)
+            bodies = part.GetBodies2(0, True)
             if bodies:
                 xs, ys, zs = [], [], []
-                for b in bodies:
+                for body in bodies:
                     try:
-                        bb = b.GetBodyBox()
+                        ib = b.mod.IBody2(body._oleobj_)
+                        bb = ib.GetBodyBox()
                         if bb:
                             xs += [bb[0], bb[3]]
                             ys += [bb[1], bb[4]]
                             zs += [bb[2], bb[5]]
-                        nface += int(b.GetFaceCount())
+                        nface += int(ib.GetFaceCount())
                     except Exception:
                         pass
                 if xs:
@@ -214,37 +279,53 @@ def read_via_solidworks(path, log=None):
         except Exception:
             pass
 
-        # 尝试导出 STL 拿三角面（用于 3D 渲染）
-        try:
-            tmp_stl = os.path.join(
-                os.environ.get("TEMP", "."),
-                f"_swprev_{abs(hash(path)) % 100000}.stl")
-            # 设置 STL 输出
-            doc.Extension.SetUserPreferenceInteger(78, 0, 1)   # 二进制
-            doc.Extension.SetUserPreferenceDouble(2, 0, 0.1)   # 偏差
-            ok = False
+        # ---- 导出 STL 拿三角面 ----
+        tmp_stl = os.path.join(
+            os.environ.get("TEMP", "."),
+            f"_swprev_{abs(hash(path)) % 10**8}.stl")
+        if os.path.exists(tmp_stl):
             try:
-                ok = doc.SaveAs4(tmp_stl, 0, 1)
+                os.remove(tmp_stl)
+            except Exception:
+                pass
+
+        try:
+            # 设置 STL 输出参数
+            try:
+                doc.Extension.SetUserPreferenceInteger(78, 0, 1)    # 二进制
+                doc.Extension.SetUserPreferenceDouble(2, 0, 0.1)    # 偏差
+                doc.Extension.SetUserPreferenceDouble(3, 0, 0.5)    # 角度容差
+            except Exception:
+                pass
+
+            ok = False
+            # SaveAs3 在静态绑定下是可用的
+            try:
+                ok = bool(doc.SaveAs3(tmp_stl, 0, 1))
             except Exception:
                 try:
-                    ok = doc.SaveAs3(tmp_stl, 0, 1)
+                    ok = bool(doc.SaveAs4(tmp_stl, 0, 1))
                 except Exception:
                     ok = False
-            if ok and os.path.exists(tmp_stl):
+
+            if os.path.exists(tmp_stl):
                 tris = read_stl(tmp_stl)
                 try:
                     os.remove(tmp_stl)
                 except Exception:
                     pass
-        except Exception:
-            pass
+        except Exception as e:
+            if log:
+                log(f"    导出 STL 失败: {str(e)[:60]}")
 
         return bbox, vol, nface, tris
     finally:
-        try:
-            sw.CloseDoc(doc.GetTitle())
-        except Exception:
-            pass
+        # 只关闭「本次新打开的」文档，不动用户原本开着的
+        if not already:
+            try:
+                sw.CloseDoc(base_name)
+            except Exception:
+                pass
 
 
 # ==================== 统一入口 ====================
