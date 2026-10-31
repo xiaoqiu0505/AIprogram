@@ -748,6 +748,13 @@ AI 对零件理解有偏差。可以：
 
 ## 版本
 
+- **v4.4** — AI 请求自动重试
+  - **修复**：偶发「DeepSeek 没有返回内容，请重试」
+    · 原因：深度思考有时把 token 全用在 reasoning 上，content 为空
+    · 修复：**自动重试最多 3 次**
+    · 第 2 次起**自动关闭深度思考**，避免 token 被吃光
+    · Key 无效 / 额度不足**不重试**（直接报错，省时间）
+  - 建模（`analyze_part`）和组装（`analyze_assembly`）都加了重试
 - **v4.3** — 修复 AI 组装崩溃 + 导入检查工具
   - **修复**：点「完成组装」后弹窗报错 `name 'json' is not defined`
     · `app.py` 用了 `json.dump` 保存装配方案，但**忘了 import json**

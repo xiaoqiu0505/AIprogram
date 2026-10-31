@@ -462,8 +462,46 @@ def analyze_part(api_key: str, text_desc: str = "", image_path: str = None,
 
     user_text = _build_analyze_text(text_desc, bool(imgs), is_sketch,
                                     is_three_view)
+
+    # ★ 自动重试（最多 3 次）：偶发 content 为空 / JSON 解析失败
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            res = _analyze_request_once(
+                provider, api_key, user_text, imgs, info, attempt)
+            if res is not None:
+                return res
+        except APIError as e:
+            last_err = e
+            if e.status_code in (401, 403, 429):
+                raise
+            if attempt >= 3:
+                raise
+        except Exception as e:
+            last_err = APIError(f"{info['name']} 请求异常：{e}",
+                                provider=provider)
+            if attempt >= 3:
+                raise last_err
+
+        if attempt < 3:
+            import time as _t
+            _t.sleep(1.5)
+
+    if last_err:
+        raise last_err
+    raise APIError(f"{info['name']} 建模失败，请重试", provider=provider)
+
+
+def _analyze_request_once(provider, api_key, user_text, imgs, info,
+                          attempt=1):
+    """发一次建模请求；内容为空/解析失败返回 None（触发重试）"""
     url, headers, payload = _build_analyze_request(
         provider, api_key, user_text, imgs)
+
+    if attempt >= 2:
+        # 重试时关掉深度思考，避免 token 被 reasoning 吃完
+        payload.pop("thinking", None)
+        payload.pop("reasoning_effort", None)
 
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=API_TIMEOUT)
@@ -498,12 +536,11 @@ def analyze_part(api_key: str, text_desc: str = "", image_path: str = None,
         raise APIError(f"{info['name']} 返回格式异常：{e}", provider=provider)
 
     if not answer:
-        raise APIError(f"{info['name']} 没有返回内容，请重试", provider=provider)
+        return None      # 内容为空 → 重试
 
     spec = _extract_json(answer)
     if spec is None:
-        raise APIError(f"{info['name']} 返回的内容不是有效的建模描述，请换个说法重试",
-                       provider=provider)
+        return None      # 解析失败 → 重试
 
     spec["_reasoning"] = reasoning
     spec["_raw"] = answer
@@ -647,8 +684,55 @@ def analyze_assembly(api_key: str, blueprint_data: dict,
     # 图片：优先用预览图
     imgs = [p for p in (preview_images or []) if p and os.path.exists(p)]
 
+    # ★ 自动重试（最多 3 次）
+    # 偶发情况：深度思考把 token 全用在 reasoning 上，content 为空。
+    # 这类失败重试一次通常就好了。
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            result = _assembly_request_once(
+                provider, api_key, user_text, imgs, info, attempt)
+            if result is not None:
+                return result
+        except APIError as e:
+            last_err = e
+            # Key 无效 / 额度不足 不重试
+            if e.status_code in (401, 403, 429):
+                raise
+            if attempt >= 3:
+                raise
+        except Exception as e:
+            last_err = APIError(f"{info['name']} 请求异常：{e}",
+                                provider=provider)
+            if attempt >= 3:
+                raise last_err
+
+        # 重试前等一下
+        if attempt < 3:
+            import time as _t
+            _t.sleep(1.5)
+
+    if last_err:
+        raise last_err
+    raise APIError(f"{info['name']} 组装失败，请重试", provider=provider)
+
+
+def _assembly_request_once(provider, api_key, user_text, imgs, info,
+                           attempt=1):
+    """
+    发一次组装请求。
+
+    返回 spec dict，或在「内容为空」时返回 None（让外层重试）。
+    其他错误抛 APIError。
+    """
+    # 重试时降低 max_tokens 里留给思考的比例，提高出结果概率
     url, headers, payload = _build_custom_request(
         provider, api_key, user_text, imgs, ASSEMBLY_PROMPT)
+
+    if attempt >= 2:
+        # 第二次开始：关掉深度思考，避免内容为空
+        payload.pop("thinking", None)
+        payload.pop("reasoning_effort", None)
 
     try:
         r = requests.post(url, headers=headers, json=payload,
@@ -685,13 +769,13 @@ def analyze_assembly(api_key: str, blueprint_data: dict,
         raise APIError(f"{info['name']} 返回格式异常：{e}", provider=provider)
 
     if not answer:
-        raise APIError(f"{info['name']} 没有返回内容，请重试", provider=provider)
+        # 内容为空 → 返回 None 让外层重试
+        return None
 
     spec = _extract_json(answer)
     if spec is None:
-        raise APIError(
-            f"{info['name']} 返回的内容不是有效的装配方案，请重试",
-            provider=provider)
+        # JSON 解析失败 → 也重试
+        return None
 
     spec["_reasoning"] = reasoning
     spec["_raw"] = answer
