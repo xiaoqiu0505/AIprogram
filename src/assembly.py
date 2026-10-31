@@ -33,12 +33,15 @@ def _T():
         "SUB": A.C_SUB, "BORDER": A.C_BORDER, "INPUT": A.C_INPUT_BG,
         "PRIMARY": A.C_PRIMARY, "PRIMARY_D": A.C_PRIMARY_D,
         "OK": A.C_OK, "ERR": A.C_ERR, "PANEL": A.C_PANEL,
-        "HOVER": A.C_HOVER, "PLACE": A.C_PLACEHOLDER,
+        "HOVER": A.C_HOVER, "PLACE": A.C_PLACEHOLDER, "WARN": A.C_WARN,
     }
 
 FONT = ("Microsoft YaHei UI", 10)
 FONT_S = ("Microsoft YaHei UI", 9)
 FONT_XL = ("Microsoft YaHei UI", 20, "bold")
+
+# WASD 每次移动的距离（毫米）
+MOVE_STEP = 5.0
 FONT_L = ("Microsoft YaHei UI", 14, "bold")
 
 
@@ -123,7 +126,30 @@ class Viewer3D(tk.Canvas):
         self.bind("<Down>", lambda e: self.scale_selected(1 / 1.1))
         self.bind("<Control-Up>", lambda e: self.scale_selected(1.25))
         self.bind("<Control-Down>", lambda e: self.scale_selected(1 / 1.25))
+
+        # ★ WASD 移动选中零件
+        for key, (dx, dy, dz) in {
+            "w": (0, MOVE_STEP, 0),      # W = 上（Y+）
+            "s": (0, -MOVE_STEP, 0),     # S = 下（Y-）
+            "a": (-MOVE_STEP, 0, 0),     # A = 左（X-）
+            "d": (MOVE_STEP, 0, 0),      # D = 右（X+）
+            "q": (0, 0, MOVE_STEP),      # Q = 前（Z+）
+            "e": (0, 0, -MOVE_STEP),     # E = 后（Z-）
+        }.items():
+            self.bind(key, lambda ev, d=(dx, dy, dz): self.move_selected(*d))
+            self.bind(key.upper(), lambda ev, d=(dx, dy, dz): self.move_selected(*d))
+
         self.configure(takefocus=1)
+
+    def move_selected(self, dx, dy, dz):
+        """移动选中的零件（WASD 用）"""
+        if not (0 <= self.selected < len(self.items)):
+            return
+        it = self.items[self.selected]
+        px, py, pz = it["pos"]
+        it["pos"] = (px + dx, py + dy, pz + dz)
+        self.redraw()
+        self._notify()
 
     # ---------- 相机操作 ----------
     def _start_rot(self, e):
@@ -512,8 +538,12 @@ class AssemblyWindow(tk.Toplevel):
         self.btn_close.pack(side="left")
 
         # 中央 3D
+        # ============ 显卡信息栏（3D 区上方）============
+        self._build_gpu_bar(t)
+
+        # 中央 3D
         self.viewer = Viewer3D(self, on_change=self._on_scene_change)
-        self.viewer.pack(fill="both", expand=True, padx=12, pady=(10, 0))
+        self.viewer.pack(fill="both", expand=True, padx=12, pady=(4, 0))
 
         # 下方托盘
         tray_wrap = tk.Frame(self, bg=t["CARD"], height=150)
@@ -533,9 +563,127 @@ class AssemblyWindow(tk.Toplevel):
 
         self._build_tray()
 
+    def _build_gpu_bar(self, t):
+        """构建 3D 区域上方的显卡信息栏"""
+        bar = tk.Frame(self, bg=t["PANEL"], height=34)
+        bar.pack(fill="x", padx=12, pady=(8, 0))
+        bar.pack_propagate(False)
+        tk.Frame(bar, bg=t["BORDER"], height=1).pack(side="bottom", fill="x")
+
+        inner = tk.Frame(bar, bg=t["PANEL"])
+        inner.pack(side="left", padx=10, pady=6)
+
+        # 显卡检测（后台，避免卡界面）
+        self._gpu_info = None
+        self.lbl_gpu = tk.Label(
+            inner, text="该程序当前使用的显示卡：检测中…",
+            font=FONT_S, fg=t["SUB"], bg=t["PANEL"], anchor="w")
+        self.lbl_gpu.pack(side="left")
+
+        self.lbl_gpu_warn = tk.Label(
+            inner, text="", font=("Microsoft YaHei UI", 9, "bold"),
+            fg=t["ERR"], bg=t["PANEL"], anchor="w")
+        self.lbl_gpu_warn.pack(side="left", padx=(12, 0))
+
+        # 右侧按钮
+        self.btn_gpu_refresh = tk.Button(
+            inner, text="重新检测", font=("Microsoft YaHei UI", 8),
+            command=self._detect_gpu_async,
+            bg=t["CARD"], fg=t["SUB"], activebackground=t["HOVER"],
+            relief="flat", bd=0, cursor="hand2", padx=8, pady=2,
+            highlightbackground=t["BORDER"], highlightthickness=1)
+
+        self._detect_gpu_async()
+
+    def _detect_gpu_async(self):
+        """后台检测显卡（用队列 + 主线程轮询，避免子线程调 Tk）"""
+        self._gpu_queue = getattr(self, "_gpu_queue", [])
+        self._gpu_polling = True
+
+        def work():
+            try:
+                import gpu_info
+                info = gpu_info.detect()
+            except Exception as e:
+                info = {"display": f"检测失败：{e}", "has_warning": False,
+                        "warning_text": ""}
+            self._gpu_queue.append(info)
+
+        threading.Thread(target=work, daemon=True).start()
+
+        # 主线程轮询
+        def poll(n=0):
+            try:
+                if not self.winfo_exists():
+                    return
+            except Exception:
+                return
+
+            if self._gpu_queue:
+                info = self._gpu_queue.pop(0)
+                self._apply_gpu(info)
+                return
+
+            if n < 150:      # 最多等 15 秒
+                try:
+                    self.after(100, lambda: poll(n + 1))
+                except Exception:
+                    pass
+
+        try:
+            self.after(100, lambda: poll(0))
+        except Exception:
+            pass
+
+    def _apply_gpu(self, info):
+        """把显卡检测结果显示到界面上"""
+        t = _T()
+        self._gpu_info = info
+        try:
+            self.lbl_gpu.config(
+                text=f"该程序当前使用的显示卡：{info.get('display', '未知')}",
+                fg=t["TEXT"] if not info.get("has_warning") else t["WARN"])
+        except Exception:
+            pass
+
+        if info.get("has_warning"):
+            try:
+                # 简短警告显示在栏里
+                self.lbl_gpu_warn.config(
+                    text="⚠ 推荐使用独立显卡",
+                    fg=t["ERR"])
+                self.btn_gpu_refresh.pack(side="left", padx=(10, 0))
+            except Exception:
+                pass
+
+            # 弹窗详细说明（只弹一次）
+            if not getattr(self, "_gpu_warned", False):
+                self._gpu_warned = True
+                try:
+                    messagebox.showwarning(
+                        "显卡提示",
+                        info.get("warning_text", "推荐使用独立显卡"),
+                        parent=self)
+                except Exception:
+                    pass
+        else:
+            try:
+                self.lbl_gpu_warn.config(text="")
+                self.btn_gpu_refresh.pack_forget()
+            except Exception:
+                pass
+
     def _build_tray(self):
+        """
+        构建零件托盘。
+
+        ★ 点一下卡片 = 选中场景里对应的零件（如果还没放进去，自动放进去）
+          不用再艰难地在 3D 画布里点中小零件。
+        """
         from PIL import Image, ImageTk
         t = _T()
+
+        self.tray_cards = []      # 每个托盘的卡片 Frame
 
         for i, item in enumerate(self.parts):
             card = tk.Frame(self.tray, bg=t["PANEL"],
@@ -563,15 +711,113 @@ class AssemblyWindow(tk.Toplevel):
             name = item["part"]["name"]
             if len(name) > 14:
                 name = name[:12] + "…"
-            tk.Label(card, text=name, font=("Microsoft YaHei UI", 8),
-                     fg=t["TEXT"], bg=t["PANEL"]).pack(pady=(2, 4))
+            nm_lbl = tk.Label(card, text=name,
+                              font=("Microsoft YaHei UI", 8),
+                              fg=t["TEXT"], bg=t["PANEL"])
+            nm_lbl.pack(pady=(2, 4))
 
-            # 拖拽绑定
-            for w in ([card] + (list(card.winfo_children()))):
+            # 状态标签（显示是否已放入/缩放倍数）
+            st_lbl = tk.Label(card, text="", font=("Microsoft YaHei UI", 7),
+                              fg=t["SUB"], bg=t["PANEL"])
+            st_lbl.pack(pady=(0, 3))
+
+            card._name_lbl = nm_lbl
+            card._st_lbl = st_lbl
+            card._part_idx = i
+            self.tray_cards.append(card)
+
+            # ★ 点击 = 选中/放入
+            def on_click(e, idx=i):
+                self.select_part_from_tray(idx)
+                return "break"
+
+            for w in [card, nm_lbl, st_lbl] + list(card.winfo_children()):
+                w.bind("<Button-1>", on_click)
+
+            # 也支持拖拽放置
+            for w in [card, nm_lbl, st_lbl] + list(card.winfo_children()):
                 w.bind("<ButtonPress-1>",
                        lambda e, idx=i: self._drag_start(e, idx))
                 w.bind("<B1-Motion>", self._drag_move)
                 w.bind("<ButtonRelease-1>", self._drag_end)
+
+        self._refresh_tray()
+
+    def _refresh_tray(self):
+        """刷新托盘卡片的高亮和状态"""
+        t = _T()
+        viewer_items = self.viewer.items
+
+        # 找出场景里每个零件实例对应的托盘索引
+        for i, card in enumerate(getattr(self, "tray_cards", [])):
+            in_scene = [j for j, it in enumerate(viewer_items)
+                        if it.get("part") is self.parts[i].get("part")]
+            selected = (self.viewer.selected in in_scene) if in_scene else False
+
+            # 高亮：选中的卡片蓝框加粗
+            try:
+                if selected:
+                    card.config(highlightbackground=t["PRIMARY"],
+                                highlightthickness=3,
+                                bg="#E8EEFF" if t["BG"] > "#808080"
+                                else "#2C3A55")
+                else:
+                    card.config(highlightbackground=t["BORDER"],
+                                highlightthickness=1,
+                                bg=t["PANEL"])
+            except Exception:
+                pass
+
+            # 状态文字
+            st = card._st_lbl
+            if not in_scene:
+                st.config(text="点击放入", fg=t["SUB"])
+            elif selected:
+                sc = viewer_items[self.viewer.selected].get("scale", 1.0)
+                txt = "★ 已选中"
+                if abs(sc - 1.0) > 1e-6:
+                    txt += f"　{sc * 100:.0f}%"
+                st.config(text=txt, fg=t["PRIMARY"])
+            else:
+                sc = viewer_items[in_scene[0]].get("scale", 1.0)
+                txt = "已放入"
+                if abs(sc - 1.0) > 1e-6:
+                    txt += f"　{sc * 100:.0f}%"
+                st.config(text=txt, fg=t["OK"])
+
+    def select_part_from_tray(self, tray_idx):
+        """点击托盘卡片：选中场景里对应零件；没有就自动放入"""
+        if not (0 <= tray_idx < len(self.parts)):
+            return
+
+        part = self.parts[tray_idx].get("part")
+        if not part or not part.get("triangles"):
+            messagebox.showwarning(
+                "无法显示 3D",
+                f"「{part.get('name', '零件')}」没有三角网格数据。\n\n"
+                f"{part.get('error') or '可能是装配体或不支持的格式。'}",
+                parent=self)
+            return
+
+        # 找到场景里已有的实例
+        found = [j for j, it in enumerate(self.viewer.items)
+                 if it.get("part") is part]
+
+        if found:
+            # 已存在 → 选中第一个
+            self.viewer.selected = found[0]
+        else:
+            # 不存在 → 自动放入（错开放置）
+            n = len(self.viewer.items)
+            offsets = [(0, 0), (120, 0), (-120, 0), (0, 120),
+                       (0, -120), (120, 120), (-120, -120), (120, -120)]
+            ox, oz = offsets[n % 8]
+            self.viewer.add_part(part, pos=(ox, 0, oz))
+
+        self.viewer.focus_set()
+        self.viewer.redraw()
+        self._refresh_tray()
+        self._on_scene_change()
 
     # ---------- 拖拽 ----------
     def _drag_start(self, e, idx):
