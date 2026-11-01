@@ -84,7 +84,7 @@ Step "2/6" "检查本地改动..."
 
 $statusLines = @(& git status --porcelain 2>&1 | Where-Object { $_ -and $_.Trim() })
 $changedCount = $statusLines.Count
-if ($changedCount -gt 0) { Ok ("You " + $changedCount + " 个文件改动") }
+if ($changedCount -gt 0) { Ok ("有 " + $changedCount + " 个文件改动") }
 else { Ok "工作区干净" }
 
 $currentBranch = (& git rev-parse --abbrev-ref HEAD 2>&1).Trim()
@@ -175,7 +175,7 @@ if ($pending -gt 0) {
 }
 
 $aheadCount = (& git rev-list --count ("origin/" + $Branch + "..HEAD") 2>&1).Trim()
-Info ("待推送提交: " + $aheadCount + " Ge")
+Info ("待推送提交: " + $aheadCount + " 个")
 
 # ---- 5. 推送 ----
 Step "5/6" "推送到 GitHub..."
