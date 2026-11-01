@@ -1,19 +1,19 @@
 ﻿# ============================================================================
-#  sync-to-github.ps1  --  YiJianTongBu YuanMa Dao GitHub
+#  sync-to-github.ps1  --  一键把源码同步到 GitHub
 # ---------------------------------------------------------------------------
-#  CangKu: https://github.com/xiaoqiu0505/AIprogram
+#  仓库: https://github.com/xiaoqiu0505/AIprogram
 #
-#  YongFa (zai PowerShell li zhi xing):
+#  用法（在 PowerShell 里执行）:
 #      cd "D:\New Program"
 #      powershell -ExecutionPolicy Bypass -File .\sync-to-github.ps1
 #
-#  ZiDong WanCheng:
-#    1. JianCha API Key XieLu
-#    2. JianCha git ZhuangTai
-#    3. LaQu YuanCheng + ZiDong HeBing FenCha
-#    4. TiJiao BenDi GaiDong
-#    5. TuiSong (ShiBai ZiDong ChongShi 3 Ci)
-#    6. DaYin JieGuo
+#  自动完成:
+#    1. 检查 API Key 泄露（关键）
+#    2. 检查 git 状态
+#    3. 拉取远程 + 自动合并分叉
+#    4. 提交本地改动
+#    5. 推送（失败自动重试 3 次）
+#    6. 打印结果
 # ============================================================================
 
 [CmdletBinding()]
@@ -36,18 +36,18 @@ function Info { param($text) Write-Host ("          " + $text) -ForegroundColor 
 
 Write-Host ""
 Write-Host "  ============================================" -ForegroundColor White
-Write-Host "   TongBu YuanMa Dao GitHub" -ForegroundColor White
+Write-Host "   源码同步到 GitHub" -ForegroundColor White
 Write-Host "   https://github.com/xiaoqiu0505/AIprogram" -ForegroundColor White
 Write-Host "  ============================================" -ForegroundColor White
 
-# ---- 0. MuLu JianCha ----
-if (-not (Test-Path $RepoDir)) { Fail ("MuLu Bu CunZai: " + $RepoDir); exit 1 }
+# ---- 0. 目录检查 ----
+if (-not (Test-Path $RepoDir)) { Fail ("目录不存在: " + $RepoDir); exit 1 }
 Set-Location $RepoDir
-if (-not (Test-Path ".git")) { Fail ("Bu Shi git CangKu: " + $RepoDir); exit 1 }
+if (-not (Test-Path ".git")) { Fail ("不是 git 仓库: " + $RepoDir); exit 1 }
 
-# ---- 1. AnQuan JianCha ----
+# ---- 1. 安全检查 ----
 if (-not $SkipKeyCheck) {
-    Step "1/6" "JianCha API Key XieLu..."
+    Step "1/6" "检查是否有 API Key 泄露..."
 
     $keyScan = Join-Path $RepoDir "check_no_keys.py"
     if (Test-Path $keyScan) {
@@ -55,64 +55,64 @@ if (-not $SkipKeyCheck) {
         $scanText = (& python $keyScan 2>&1) -join "`n"
 
         if ($scanText -match "LEAK") {
-            Fail "FaXian API Key XieLu! Yi ZhongZhi"
+            Fail "发现 API Key 泄露！已中止同步"
             Info ""
             ($scanText -split "`n") | Where-Object { $_ -match "LEAK" } | ForEach-Object { Info $_.Trim() }
             Info ""
-            Info "Qing Xian QingLi ZheXie WenJian Li De Key, Zai ChongXin YunXing."
+            Info "请先清理这些文件里的 Key，再重新运行。"
             exit 1
         }
-        Ok "MeiYou FaXian Key XieLu"
+        Ok "没有发现 Key 泄露"
     } else {
-        Warn "ZhaoBuDao check_no_keys.py, TiaoGuo JianCha"
+        Warn "找不到 check_no_keys.py，跳过检查"
     }
 
     $bad = & git ls-files 2>&1 | Where-Object { $_ -match "config\.json|\.env$|secret" }
     if ($bad) {
-        Fail "YiXia MinGan WenJian YiBei git GenZong:"
+        Fail "以下敏感文件已被 git 跟踪："
         $bad | ForEach-Object { Info $_ }
-        Info "Yong git rm --cached WENJIAN MingLing YiChu Hou Zai TongBu"
+        Info "用 git rm --cached 文件名 移除后再同步"
         exit 1
     }
-    Ok "MinGan WenJian WeiBei GenZong"
+    Ok "敏感文件未被跟踪"
 } else {
-    Step "1/6" "TiaoGuo Key JianCha (SkipKeyCheck)"
+    Step "1/6" "跳过 Key 检查 (-SkipKeyCheck)"
 }
 
-# ---- 2. git ZhuangTai ----
-Step "2/6" "JianCha BenDi GaiDong..."
+# ---- 2. git 状态 ----
+Step "2/6" "检查本地改动..."
 
 $statusLines = @(& git status --porcelain 2>&1 | Where-Object { $_ -and $_.Trim() })
 $changedCount = $statusLines.Count
-if ($changedCount -gt 0) { Ok ("You " + $changedCount + " Ge WenJian GaiDong") }
-else { Ok "GongZuoQu GanJing" }
+if ($changedCount -gt 0) { Ok ("You " + $changedCount + " 个文件改动") }
+else { Ok "工作区干净" }
 
 $currentBranch = (& git rev-parse --abbrev-ref HEAD 2>&1).Trim()
-Info ("DangQian FenZhi: " + $currentBranch)
+Info ("当前分支: " + $currentBranch)
 
 $remoteUrl = (& git remote get-url origin 2>&1).Trim()
-if (-not $remoteUrl) { Fail "MeiYou PeiZhi origin YuanCheng"; exit 1 }
-Info ("YuanCheng: " + $remoteUrl)
+if (-not $remoteUrl) { Fail "没有配置 origin 远程"; exit 1 }
+Info ("远程: " + $remoteUrl)
 
 if ($remoteUrl -notmatch "xiaoqiu0505/AIprogram") {
-    Warn "YuanCheng DiZhi He YuQi BuFu"
-    if (-not $Force) { Info "QueRen MeiWenTi Qing Jia -Force JiXu"; exit 1 }
+    Warn "远程地址和预期不符"
+    if (-not $Force) { Info "确认没问题请加 -Force 继续"; exit 1 }
     & git remote set-url origin "https://github.com/xiaoqiu0505/AIprogram.git"
-    Ok "Yi XiuZheng YuanCheng DiZhi"
+    Ok "已修正远程地址"
 }
 
-# ---- 3. LaQu HeBing ----
-Step "3/6" "TongBu YuanCheng ZuiXin DaiMa..."
+# ---- 3. 拉取并合并 ----
+Step "3/6" "同步远程最新代码..."
 
 $fetched = $false
 for ($i = 1; $i -le 3; $i++) {
     & git fetch origin $Branch 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { $fetched = $true; break }
-    Warn ("LaQu ShiBai (Di " + $i + " Ci), 2 Miao Hou ChongShi...")
+    Warn ("拉取失败（第 " + $i + " 次），2 秒后重试...")
     Start-Sleep -Seconds 2
 }
-if (-not $fetched) { Fail "WuFa LianJie GitHub"; Info "Qing JianCha WangLuo Hou ChongShi"; exit 1 }
-Ok "YuanCheng XinXi YiHuoQu"
+if (-not $fetched) { Fail "无法连接 GitHub"; Info "请检查网络后重试"; exit 1 }
+Ok "远程信息已获取"
 
 $divOut = (& git rev-list --left-right --count ("origin/" + $Branch + "...HEAD") 2>&1)
 if ($LASTEXITCODE -eq 0) {
@@ -120,127 +120,127 @@ if ($LASTEXITCODE -eq 0) {
     if ($parts.Count -ge 2) {
         $remoteOnly = [int]$parts[0]
         $localOnly  = [int]$parts[1]
-        Info ("YuanCheng DuYou: " + $remoteOnly + "   BenDi DuYou: " + $localOnly)
+        Info ("远程独有: " + $remoteOnly + " 个提交   本地独有: " + $localOnly + " 个提交")
 
         if ($remoteOnly -gt 0 -and $localOnly -gt 0) {
-            Warn "BenDi He YuanCheng Yi FenCha, ZiDong HeBing..."
+            Warn "本地和远程已分叉，自动合并..."
 
             $stashed = $false
             if ($changedCount -gt 0) {
                 & git stash push -u -m "auto-stash" 2>&1 | Out-Null
-                if ($LASTEXITCODE -eq 0) { $stashed = $true; Info "Yi ZanCun BenDi GaiDong" }
+                if ($LASTEXITCODE -eq 0) { $stashed = $true; Info "已暂存本地改动" }
             }
 
             & git merge ("origin/" + $Branch) --no-edit -X ours 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
-                Warn "PuTong HeBing ShiBai, ChangShi YunXu WuGuan LiShi..."
+                Warn "普通合并失败，尝试允许无关历史..."
                 & git merge ("origin/" + $Branch) --no-edit --allow-unrelated-histories -X ours 2>&1 | Out-Null
             }
 
             if ($LASTEXITCODE -eq 0) {
-                Ok "HeBing WanCheng"
+                Ok "合并完成"
             } else {
-                Fail "ZiDong HeBing ShiBai"
+                Fail "自动合并失败，需要手动处理"
                 (& git status --short 2>&1) | Select-Object -First 10 | ForEach-Object { Info $_ }
                 Info ""
-                Info "ShouDong ChuLi: git merge --abort RanHou ShouDong HeBing"
+                Info "手动处理: git merge --abort 然后手动合并"
                 if ($stashed) { & git stash pop 2>&1 | Out-Null }
                 exit 1
             }
 
-            if ($stashed) { & git stash pop 2>&1 | Out-Null; Info "Yi HuiFu BenDi GaiDong" }
+            if ($stashed) { & git stash pop 2>&1 | Out-Null; Info "已恢复本地改动" }
         } elseif ($remoteOnly -gt 0) {
-            Warn "YuanCheng You Xin TiJiao, KuaiJin HeBing..."
+            Warn "远程有新提交，快进合并..."
             & git merge ("origin/" + $Branch) --no-edit -X theirs 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) { Ok "Yi TongBu YuanCheng" }
+            if ($LASTEXITCODE -eq 0) { Ok "已同步远程" }
         } else {
-            Ok ("BenDi LingXian YuanCheng " + $localOnly + " Ge TiJiao")
+            Ok ("本地领先远程 " + $localOnly + " 个提交")
         }
     }
 }
 
-# ---- 4. TiJiao ----
-Step "4/6" "TiJiao BenDi GaiDong..."
+# ---- 4. 提交 ----
+Step "4/6" "提交本地改动..."
 
 $pending = @(& git status --porcelain 2>&1 | Where-Object { $_ -and $_.Trim() }).Count
 
 if ($pending -gt 0) {
-    if (-not $Message) { $Message = "GengXin YuanMa " + (Get-Date -Format "yyyy-MM-dd HH:mm") }
+    if (-not $Message) { $Message = "更新源码 " + (Get-Date -Format "yyyy-MM-dd HH:mm") }
     & git add -A 2>&1 | Out-Null
     & git commit -m $Message 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Ok ("Yi TiJiao: " + $Message) }
-    else { Warn "TiJiao FanHui Fei 0 (KeNeng MeiYou ShiJi GaiDong)" }
+    if ($LASTEXITCODE -eq 0) { Ok ("已提交: " + $Message) }
+    else { Warn "提交返回非 0（可能没有实际改动）" }
 } else {
-    Ok "MeiYou XuYao TiJiao De GaiDong"
+    Ok "没有需要提交的改动"
 }
 
 $aheadCount = (& git rev-list --count ("origin/" + $Branch + "..HEAD") 2>&1).Trim()
-Info ("Dai TuiSong TiJiao: " + $aheadCount + " Ge")
+Info ("待推送提交: " + $aheadCount + " Ge")
 
-# ---- 5. TuiSong ----
-Step "5/6" "TuiSong Dao GitHub..."
+# ---- 5. 推送 ----
+Step "5/6" "推送到 GitHub..."
 
 $pushed = $false
 for ($i = 1; $i -le 3; $i++) {
-    Info ("ChangShi TuiSong (Di " + $i + " Ci)...")
+    Info ("尝试推送（第 " + $i + " 次）...")
     $pushOut = (& git push origin ("HEAD:" + $Branch) 2>&1)
     $pushText = $pushOut -join "`n"
 
     if ($LASTEXITCODE -eq 0) { $pushed = $true; break }
-    if ($pushText -match "Everything up-to-date") { $pushed = $true; Ok "YuanCheng Yi Shi ZuiXin"; break }
+    if ($pushText -match "Everything up-to-date") { $pushed = $true; Ok "远程已是最新"; break }
 
     if ($pushText -match "rejected|non-fast-forward|fetch first") {
-        Warn "YuanCheng You Xin TiJiao, ChongXin HeBing Hou ChongShi..."
+        Warn "远程有新提交，重新合并后重试..."
         & git fetch origin $Branch 2>&1 | Out-Null
         & git merge ("origin/" + $Branch) --no-edit -X ours 2>&1 | Out-Null
         continue
     }
 
     if ($pushText -match "Authentication failed|could not read Username|403") {
-        Fail "RenZheng ShiBai"
+        Fail "认证失败"
         Info ""
-        Info "JieJue BanFa:"
-        Info "  FangShi A:  git credential-manager github login"
-        Info "  FangShi B:  1) DaKai https://github.com/settings/tokens ShengCheng token (Gou repo)"
-        Info "              2) git remote set-url origin https://TOKEN@g ithub.com/xiaoqiu0505/AIprogram.git"
-        Info "              (Ba TOKEN HuanCheng Ni De Token)"
+        Info "解决办法（二选一）："
+        Info "  方式 A: git credential-manager github login  触发登录弹窗"
+        Info "  方式 B: 1) 打开 https://github.com/settings/tokens 生成 token（勾 repo 权限）"
+        Info "        2) git remote set-url origin https://你的TOKEN@github.com/xiaoqiu0505/AIprogram.git"
+        Info "                      （把 你的TOKEN 换成真实 token）"
         exit 1
     }
 
     if ($pushText -match "Connection was reset|timed out|Could not resolve|unable to access") {
-        Warn "WangLuo WenTi, 3 Miao Hou ChongShi..."
+        Warn "网络问题，3 秒后重试..."
         Start-Sleep -Seconds 3
         continue
     }
 
-    Warn ("TuiSong ShiBai (Di " + $i + " Ci)")
+    Warn ("推送失败（第 " + $i + " 次）")
     ($pushText -split "`n") | Select-Object -First 6 | ForEach-Object { Info $_.Trim() }
     Start-Sleep -Seconds 2
 }
 
 if (-not $pushed) {
-    Fail "TuiSong ShiBai, Yi ChongShi 3 Ci"
-    Info "BenDi TiJiao Dou Zai, WangLuo HuiFu Hou ChongXin YunXing."
+    Fail "推送失败，已重试 3 次"
+    Info "本地提交都还在，网络恢复后重新运行本脚本即可。"
     exit 1
 }
-Ok "TuiSong ChengGong"
+Ok "推送成功"
 
-# ---- 6. JieGuo ----
-Step "6/6" "WanCheng"
+# ---- 6. 结果 ----
+Step "6/6" "完成"
 
 $headShort = (& git rev-parse --short HEAD 2>&1).Trim()
 $headMsg = (& git log -1 --pretty=format:"%s" 2>&1).Trim()
 
 Write-Host ""
 Write-Host "  ============================================" -ForegroundColor Green
-Write-Host "   TongBu WanCheng" -ForegroundColor Green
+Write-Host "   同步完成" -ForegroundColor Green
 Write-Host "  ============================================" -ForegroundColor Green
-Write-Host ("   TiJiao: " + $headShort + "  " + $headMsg) -ForegroundColor White
-Write-Host "   CangKu: https://github.com/xiaoqiu0505/AIprogram" -ForegroundColor White
+Write-Host ("   提交: " + $headShort + "  " + $headMsg) -ForegroundColor White
+Write-Host "   仓库: https://github.com/xiaoqiu0505/AIprogram" -ForegroundColor White
 Write-Host "  ============================================" -ForegroundColor Green
 Write-Host ""
 
-$open = Read-Host "  DaKai GitHub KanKan? (Y/n)"
+$open = Read-Host "  打开 GitHub 看看? (Y/n)"
 if ($open -ne "n" -and $open -ne "N") {
     Start-Process "https://github.com/xiaoqiu0505/AIprogram"
 }
